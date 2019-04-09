@@ -7,41 +7,22 @@ use Getopt::Long;
 use Math::Trig;
 use POSIX;# for floor etc.
 
-my $sourceAirport ="";
+my $airport = "";
 
 GetOptions ("airportDir=s" => \$airportDirectory,
-"pilot=s" => \$pilot,
 "climode=s" => \$climode,
-"writeAPDir=s" => \$sourceAirport,
+"airport=s" => \$airport,
 "debug=s" => \$debug);
 
 
 readAirportDirectory();
-getDistances('EDFM');
 
-if ($sourceAirport ne ""){
-    writeDirectoryByDistanceFrom($sourceAirport);
+if (!defined($lat{$airport})){
+    die "undefined airport $airport\n";
 }
 
-my $filename = 'ttfExample.gpx';
-my $tmpFile = XML::LibXML->load_xml(location => $filename);
-my $xpc = XML::LibXML::XPathContext->new($tmpFile);
-$xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
-
-
-foreach my $gpx ($xpc->findnodes('//g:trkpt')) {
-    $lat = $gpx->getAttribute('lat');
-    $lon = $gpx->getAttribute('lon');
-    
-    $xpc->setContextNode($gpx);
-    $xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
-
-    $ele = $xpc->findvalue('g:ele');
-    $speed = $xpc->findvalue('g:speed') * 3600/1852;
-    $time = $xpc->findvalue('g:time');
-    
-    say $time . ": " . "($lat,$lon) at $ele m [$speed kts]" if ($debug);
-}
+getDistances($airport);
+writeDirectoryByDistanceFrom($airport);
 
 sub getDistances {
     my $icao = shift;
@@ -52,7 +33,7 @@ sub getDistances {
     
         $distance{$ic} = $pt->distance($edfmpt);
         $distance = ceil($distance{$ic} / 1852);
-        say $ic . " DISTANCE: " . $distance;
+        say $ic . " DISTANCE: " . $distance if ($debug);
     }
 }
 
@@ -62,20 +43,27 @@ sub writeDirectoryByDistanceFrom {
     
     open(APDIR, ">$filename") || die "can't open $filename: $!";
     my @airports = sort { $distance{$a} <=> $distance{$b} } keys %distance;
+    my $i = 0;
+    print APDIR "addbbdfi1.0;ap=$airport";
+    foreach $ap (@airports){
+        if ($i == 1000){
+            my $distance = ceil($distance{$ap}/1000);
+            print APDIR ";$distance";
+            $i = 0;
+        }
+        $i++
+    }
+    
+    print APDIR "\n";
     foreach $ap (@airports) {
-        $distance = ceil($distance{$ap} / 1852);
-        print APDIR "$ap;$p_name{$ap};$lat{$ap};$lon{$ap};$alt_ft{$ap};$distance{$ap}\n";
+        $distance = ceil($distance{$ap}/1000);
+        print APDIR "$ap;$p_name{$ap};$lat{$ap};$lon{$ap};$alt_ft{$ap};$distance\n";
         say $ap . " " . $distance if $debug;
     }
     close APDIR;
 }
 
-#$debug = 1;
-
 package Point;
-
-$one_sea_mile = 1852;
-$one_deg_in_m = $one_sea_mail * 60; #60 min = 1 deg
 
 sub new {
     my $class = shift;
@@ -182,9 +170,4 @@ sub normalizeName {
     $name =~s/\///g;
     $name = lc($name);
     return $name;
-}
-
-sub printUsageAndExit(){
-	print "exit now ARGV = $#ARGV\n";
-	exit(0);
 }
