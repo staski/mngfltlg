@@ -9,6 +9,7 @@ use Math::Trig;
 use POSIX;# for floor etc.
 use Date::Parse;
 
+# the class representing a point on earth
 package gpxPoint;
 use 5.10.0;
 our $debug;
@@ -62,12 +63,130 @@ sub distance {
     return $distance;
 }
 
+# the class representing a single flight in a flight log
+package cpsFlight;
+use 5.10.0;
+use POSIX;
+
+our $debug;
+
+sub new {
+    my $class = shift;
+    my ( $plane, $dof, $pilot, $dap, $lap, $tot, $lat, $duration, $lc ) = @_;
+    my $self = bless {
+        plane => $plane,
+        dayofFlight => $dof,
+        pilot => $pilot,
+        departureAirport => $dap,
+        landingAirport => $lap,
+        takeoffTime => $tot,
+        landingTime => $lat,
+        landingCount => $lc,
+        duration => $duration
+    }, $class;
+    
+    return $self;
+}
+
+sub dayofFlight {
+    my $self = shift;
+    return $self->{'dayofFlight'};
+}
+
+sub departureAirport {
+    my $self = shift;
+    return $self->{'departureAirport'};
+}
+
+sub takeoffTime {
+    my $self = shift;
+    return $self->{'takeoffTime'};
+}
+
+sub landingAirport {
+    my $self = shift;
+    return $self->{'landingAirport'};
+}
+
+sub landingTime {
+    my $self = shift;
+    return $self->{'landingTime'};
+}
+
+sub pilot {
+    my $self = shift;
+    return $self->{'pilot'};
+}
+
+sub plane {
+    my $self = shift;
+    return $self->{'plane'};
+}
+
+sub duration {
+    my $self = shift;
+    return $self->{'duration'};
+}
+
+sub landingCount {
+    my $self = shift;
+    return $self->{'landingCount'};
+}
+
+sub setDepartureAirport {
+    my $self = shift;
+    my $ap = shift;
+    $self->{'departureAirport'} = $ap;
+}
+
+sub setLandingAirport {
+    my $self = shift;
+    my $ap = shift;
+    $self->{'landingAirport'} = $ap;
+}
+
+sub setLandingCount {
+    my $self = shift;
+    my $lc = shift;
+    $self->{'landingCount'} = $lc;
+}
+
+sub setLandingTime {
+    my $self = shift;
+    my $lt = shift;
+    $self->{'landingTime'} = $lt;
+}
+
+sub setDuration {
+    my $self = shift;
+    my $duration = shift;
+    $self->{'duration'} = $duration;
+}
+
+
+sub print {
+    my $self = shift;
+    my $text = shift;
+    $text .= " " . $self->dayofFlight .
+        " | " . $self->pilot .
+        " | " . $self->departureAirport .
+        " | " . $self->takeoffTime .
+        " | " . $self->landingAirport .
+        " | " . $self->landingTime .
+        " | " . ceil($self->duration/60) .
+    " | " . $self->landingCount;
+
+    say "$text";
+    #    say "($text) $self->dayOfFlight | $self->pilot | $self->departureAirport | $self->takeoffTime | $self->landingAirport | $self->landingTime | $self->countLandings"
+}
+
+
 package main;
 
 my $gpxName = 'ttfExample.gpx';
 my $airportDirectory = "ap_from_edfm.txt";
 my $takeoffSpeed = 60;
-my $landingSpeed = 50;
+my $landingSpeed = 57;
 my $feet_for_m = 3.28084;
 my $sourceAirport = "";
 
@@ -77,92 +196,140 @@ GetOptions ("airportDir=s" => \$airportDirectory,
 "gpxName=s" => \$gpxName,
 "debug=s" => \$debug);
 
-
+# this sets the "sourceAirport". The directory is sorted by distance from this airport
 readAirportDirectory();
 $sapt = gpxPoint->new($lat{$sourceAirport},$lon{$sourceAirport});
 
-my $tmpFile = XML::LibXML->load_xml(location => $gpxName);
-my $xpc = XML::LibXML::XPathContext->new($tmpFile);
-$xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
+#read in the given GPX File
+my @to = readGpxFile();
+if ($#to < 0){
+    die "not a valid flight found in $gpxName";
+}
 
-my $isFlying = 0;
-my $count = 0;
+#create flight log entries from the parsed result. One entry for each pair takeoff - landing
+@allFlights = createFlights(@to);
 
-foreach my $gpx ($xpc->findnodes('//g:trkpt')) {
-    $lat = $gpx->getAttribute('lat');
-    $lon = $gpx->getAttribute('lon');
+# join those entries where the takeoff is from the same AP as the landing of the previous and this
+# one
+push @jap, $allFlights[0];
+$prev= $allFlights[0];
+for (my $i = 1; $i <= $#allFlights; $i++) {
+    my $this = $allFlights[$i];
+    #my $prev = $allFlights[$i - 1];
+    $prev->print("PREV") if ($debug);
+    $this->print("THIS") if ($debug);
+    if ($prev->landingAirport eq $this->departureAirport &&
+        $this->landingAirport eq $this->departureAirport){
+            say "HIT" if ($debug);
+            $prev->setLandingTime($this->landingTime);
+            $prev->setLandingAirport($this->landingAirport);
+            $prev->setLandingCount($prev->landingCount + $this->landingCount);
+            $prev->setDuration($prev->duration + $this->duration);
+    }
+    else {
+        $prev = $this;
+        push @jap, $this;
+    }
+}
+
+foreach $flight (@jap){
+    $flight->print("Flight") || die "ERROR";
+}
+
+sub createFlights {
+    my @takeOff = @_;
+    my $isFlying = 0;
     
-    $xpc->setContextNode($gpx);
+    if ($takeOff[0] =~ /^landing/){
+        $isFlying = 1;
+    }
+    #TODO : Check if first event is landing
+
+    foreach $event (@takeOff){
+        my ($evt,$time,$lat,$lon,$ele,$speed) = split (/;/, $event);
+        say "EVT: $evt $time $lat $lon $ele $speed" if ($debug);
+        
+        my $loc = gpxPoint->new($lat,$lon);
+        my $dist = ceil($loc->distance($sapt)/1000);
+        
+        say "FIND NEAREST HINT: $dist" if ($debug);
+        my $ap = findNearestAirport($loc, $dist);
+        say "$evt on AP $ap" if ($debug);
+        my $distance = $loc->distance(gpxPoint->new($lat{$ap},$lon{$ap}));
+        #next unless ($distance < 5000);
+        if ($distance > 5000){
+            $ap = "Unknown";
+        }
+        my ($sec,$min,$hour,$day,$month, $year, $zone) = strptime($time);
+        $year += 1900;
+        $month++;
+        my $timeseconds = str2time($time);
+        
+        if ($evt eq "takeoff"){
+            if ($isFlying == 1){
+                say "WARNING: takeoff but Flying - $event";
+            }
+            $isFlying = 1;
+            $dayofFlight = "$day.$month.$year";
+            $takeoffTime = "$hour:$min";
+            $takeoffepoch = $timeseconds;
+            $departureAirport = $ap;
+        } else {
+            if ($isFlying == 0){
+                say "WARNING: landing but not flying - $event";
+            }
+            $isFlying = 0;
+            $flightDuration = $timeseconds - $takeoffepoch;
+            #$flightHours = floor($flightDurationMinutes/60);
+            #$flightMinutes = $flightDurationMinutes - 60*$flightHours;
+            $landingAirport = $ap;
+            $landingTime = "$hour:$min";
+            my $cpsFlight = cpsFlight->new("DEEBU", $dayofFlight,$pilot,$departureAirport,$landingAirport, $takeoffTime,$landingTime, $flightDuration, 1);
+
+            $cpsFlight->print("FLIGHT") if ($debug);
+            push @allFlights, $cpsFlight;
+            #print "$dayofFlight | $pilot | $departureAirport | $landingAirport | $takeoffTime | $landingTime | $flightDurationMinutes ($flightHours:$flightMinutes)\n";
+        }
+        
+    }
+    return @allFlights;
+}
+
+sub readGpxFile {
+    my @fa;
+    my $tmpFile = XML::LibXML->load_xml(location => $gpxName);
+    my $xpc = XML::LibXML::XPathContext->new($tmpFile);
     $xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
 
-    $ele = ceil($xpc->findvalue('g:ele') * $feet_for_m);
-    $speed = ceil($xpc->findvalue('g:speed') * 3600/1852);
-    $time = $xpc->findvalue('g:time');
-    
-    if ($isFlying == 0 && $speed > $takeoffSpeed){
-        $isFlying = 1;
-        $takeOff[$count] = "takeoff;$time;$lat;$lon;$ele;$speed";
-        $count++;
-        say $takeOff[$count] if ($debug);
+    my $count = 0;
+    my $isFlying = 0;
+    foreach my $gpx ($xpc->findnodes('//g:trkpt')) {
+        my $lat = $gpx->getAttribute('lat');
+        my $lon = $gpx->getAttribute('lon');
+        
+        $xpc->setContextNode($gpx);
+        $xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
+        
+        $ele = ceil($xpc->findvalue('g:ele') * $feet_for_m);
+        $speed = ceil($xpc->findvalue('g:speed') * 3600/1852);
+        $time = $xpc->findvalue('g:time');
+        
+        if ($isFlying == 0 && $speed > $takeoffSpeed){
+            $isFlying = 1;
+            $fa[$count] = "takeoff;$time;$lat;$lon;$ele;$speed";
+            $count++;
+            say $fa[$count] if ($debug);
+        }
+        if ($isFlying == 1 && $speed < $landingSpeed){
+            $isFlying = 0;
+            $fa[$count] = "landing;$time;$lat;$lon;$ele;$speed";
+            $count++;
+            say $fa[$count] if ($debug);
+        }
     }
-    if ($isFlying == 1 && $speed < $landingSpeed){
-        $isFlying = 0;
-        $takeOff[$count] = "landing;$time;$lat;$lon;$ele;$speed";
-        $count++;
-        say $takeOff[$count] if ($debug);
-    }
+    return @fa;
 }
 
-if ($takeOff[0] =~ /^landing/){
-    $isFlying = 1;
-} else {
-    $isFlying = 0;
-}
-
-#TODO : Check if first event is landing
-foreach $event (@takeOff){
-    my ($evt,$time,$lat,$lon,$ele,$speed) = split (/;/, $event);
-    say "EVT: $evt $time $lat $lon $ele $speed" if ($debug);
-    
-    my $loc = gpxPoint->new($lat,$lon);
-    my $dist = ceil($loc->distance($sapt)/1000);
-    
-    say "FIND NEAREST HINT: $dist" if ($debug);
-    my $ap = findNearestAirport($loc, $dist);
-    say "$evt on AP $ap" if ($debug);
-    my $distance = $loc->distance(gpxPoint->new($lat{$ap},$lon{$ap}));
-    #next unless ($distance < 5000);
-    if ($distance > 5000){
-        $ap = "Unknown";
-    }
-    my ($sec,$min,$hour,$day,$month, $year, $zone) = strptime($time);
-    $year += 1900;
-    $month++;
-    my $timeseconds = str2time($time);
-    
-    if ($evt eq "takeoff"){
-        if ($isFlying == 1){
-            say "WARNING: takeoff but Flying - $event";
-        }
-        $isFlying = 1;
-        $dayofFlight = "$day.$month.$year";
-        $takeoffTime = "$hour:$min";
-        $takeoffepoch = $timeseconds;
-        $departureAirport = $ap;
-    } else {
-        if ($isFlying == 0){
-            say "WARNING: landing but not flying - $event";
-        }
-        $isFlying = 0;
-        $flightDurationMinutes = floor(($timeseconds - $takeoffepoch)/60);
-        $flightHours = floor($flightDurationMinutes/60);
-        $flightMinutes = $flightDurationMinutes - 60*$flightHours;
-        $landingAirport = $ap;
-        $landingTime = "$hour:$min";
-        print "$dayofFlight | $pilot | $departureAirport | $landingAirport | $takeoffTime | $landingTime | $flightDurationMinutes ($flightHours:$flightMinutes)\n";
-    }
-    
-}
 
 sub findNearestAirport {
     my $target = shift;
@@ -193,6 +360,10 @@ sub findNearestAirport {
             $nix = $i;
             $nearest = $dist;
             say "NEAREST $nix $dist" if ($debug);
+            if ($dist < 5000) {
+                say "PERFECT match -> break LOOP" if ($debug);
+                last;
+            }
         }
     }
     say "FOUND NEAREST $allairports[$nix] DIST $nearest" if ($debug);
