@@ -1,188 +1,24 @@
 #!/usr/bin/perl
 
 use 5.10.0;
+
 #use strict;
 #use warnings;
+
 use XML::LibXML;
 use Getopt::Long;
 use Math::Trig;
 use POSIX;# for floor etc.
 use Date::Parse;
+use File::Temp;
 
-# the class representing a point on earth
-package gpxPoint;
-use 5.10.0;
-our $debug;
-
-sub new {
-    my $class = shift;
-    my ( $lat, $lon ) = @_;
-    my $self = bless {
-        lat => $lat,
-        lon => $lon,
-    }, $class;
-    
-    return $self;
-}
-
-sub print {
-    my $self = shift;
-    my $text = shift;
-    say "($text) LAT: " . $self->{'lat'} . " LON: " . $self->{'lon'};
-}
-
-sub lon {
-    my $self = shift;
-    return $self->{lon};
-}
-
-sub lat {
-    my $self = shift;
-    return $self->{lat};
-}
-
-
-sub distance {
-    my $self = shift;
-    my $other = shift;
-    
-    
-    $self->print("SELF") if ($debug);
-    $other->print("OTHER") if ($debug);
-    
-    my $lon2 = Math::Trig::deg2rad($other->lon);
-    my $lon1 = Math::Trig::deg2rad($self->lon);
-    my $lat2 = Math::Trig::deg2rad(90 - $other->lat);
-    my $lat1 = Math::Trig::deg2rad(90 - $self->lat);
- 
-    my $distance = Math::Trig::great_circle_distance($lon1,$lat1,$lon2,$lat2) * 6367 * 1000;
- 
-    $distance = POSIX::ceil($distance);
-    say "DISTANCE $distance" if ($debug);
-    
-    return $distance;
-}
-
-# the class representing a single flight in a flight log
-package cpsFlight;
-use 5.10.0;
-use POSIX;
-
-our $debug;
-
-sub new {
-    my $class = shift;
-    my ( $plane, $dof, $pilot, $dap, $lap, $tot, $lat, $duration, $lc ) = @_;
-    my $self = bless {
-        plane => $plane,
-        dayofFlight => $dof,
-        pilot => $pilot,
-        departureAirport => $dap,
-        landingAirport => $lap,
-        takeoffTime => $tot,
-        landingTime => $lat,
-        landingCount => $lc,
-        duration => $duration
-    }, $class;
-    
-    return $self;
-}
-
-sub dayofFlight {
-    my $self = shift;
-    return $self->{'dayofFlight'};
-}
-
-sub departureAirport {
-    my $self = shift;
-    return $self->{'departureAirport'};
-}
-
-sub takeoffTime {
-    my $self = shift;
-    return $self->{'takeoffTime'};
-}
-
-sub landingAirport {
-    my $self = shift;
-    return $self->{'landingAirport'};
-}
-
-sub landingTime {
-    my $self = shift;
-    return $self->{'landingTime'};
-}
-
-sub pilot {
-    my $self = shift;
-    return $self->{'pilot'};
-}
-
-sub plane {
-    my $self = shift;
-    return $self->{'plane'};
-}
-
-sub duration {
-    my $self = shift;
-    return $self->{'duration'};
-}
-
-sub landingCount {
-    my $self = shift;
-    return $self->{'landingCount'};
-}
-
-sub setDepartureAirport {
-    my $self = shift;
-    my $ap = shift;
-    $self->{'departureAirport'} = $ap;
-}
-
-sub setLandingAirport {
-    my $self = shift;
-    my $ap = shift;
-    $self->{'landingAirport'} = $ap;
-}
-
-sub setLandingCount {
-    my $self = shift;
-    my $lc = shift;
-    $self->{'landingCount'} = $lc;
-}
-
-sub setLandingTime {
-    my $self = shift;
-    my $lt = shift;
-    $self->{'landingTime'} = $lt;
-}
-
-sub setDuration {
-    my $self = shift;
-    my $duration = shift;
-    $self->{'duration'} = $duration;
-}
-
-
-sub print {
-    my $self = shift;
-    my $text = shift;
-    $text .= " " . $self->dayofFlight .
-        " | " . $self->pilot .
-        " | " . $self->departureAirport .
-        " | " . $self->takeoffTime .
-        " | " . $self->landingAirport .
-        " | " . $self->landingTime .
-        " | " . ceil($self->duration/60) .
-    " | " . $self->landingCount;
-
-    say "$text";
-    #    say "($text) $self->dayOfFlight | $self->pilot | $self->departureAirport | $self->takeoffTime | $self->landingAirport | $self->landingTime | $self->countLandings"
-}
+use CGI;
+use CGI::Carp qw ( fatalsToBrowser );
 
 
 package main;
 
+my $scriptName = $0;
 my $gpxName = 'ttfExample.gpx';
 my $airportDirectory = "ap_from_edfm.txt";
 my $takeoffSpeed = 60;
@@ -192,16 +28,23 @@ my $sourceAirport = "";
 
 GetOptions ("airportDir=s" => \$airportDirectory,
 "pilot=s" => \$pilot,
-"climode=s" => \$climode,
 "gpxName=s" => \$gpxName,
 "debug=s" => \$debug);
 
+$isCGI = isCGI($scriptName);
+say $isCGI if $debug;
+my $cgi_query = initCGI($isCGI);
+
+say $cgi_query if $debug;
+
+$gpxName = getGpxName($cgi_query);
+say $gpxName if $debug;
 # this sets the "sourceAirport". The directory is sorted by distance from this airport
 readAirportDirectory();
 $sapt = gpxPoint->new($lat{$sourceAirport},$lon{$sourceAirport});
 
 #read in the given GPX File
-my @to = readGpxFile();
+my @to = readGpxFile($gpxName);
 if ($#to < 0){
     die "not a valid flight found in $gpxName";
 }
@@ -234,6 +77,54 @@ for (my $i = 1; $i <= $#allFlights; $i++) {
 
 foreach $flight (@jap){
     $flight->print("Flight") || die "ERROR";
+}
+
+sub isCGI {
+    my $name = shift;
+    if ($name =~ /.+\.cgi/){
+        return 1;
+    }
+    else {
+        return 0;
+    }
+}
+
+sub initCGI {
+    my $lisCGI = shift;
+    if ($lisCGI){
+        my $cgi_query = CGI->new();
+        $debug = $cgi_query->param('debug');
+     
+        print $cgi_query->header;
+        print $cgi_query->start_html;
+        
+
+        return $cgi_query;
+    }
+}
+
+sub getGpxName {
+    my $query = shift;
+    my $gName = $gpxName;
+    
+    if ($isCGI == 0){
+        return $gName;
+    }
+    
+    my $lfh  = $query->upload('theFile');
+    $tmpfile = File::Temp->new();
+    $gName = $tmpfile->filename;
+    say $gName if $debug;
+    if (defined $lfh) {
+        # Upgrade the handle to one compatible with IO::Handle:
+        my $io_handle = $lfh->handle;
+        
+        while ($bytesread = read($io_handle, $buffer, 1024)) {
+            print $tmpfile $buffer;
+        }
+        close $tmpfile;
+        return $gName;
+    }
 }
 
 sub createFlights {
@@ -284,10 +175,10 @@ sub createFlights {
             #$flightMinutes = $flightDurationMinutes - 60*$flightHours;
             $landingAirport = $ap;
             $landingTime = "$hour:$min";
-            my $cpsFlight = cpsFlight->new("DEEBU", $dayofFlight,$pilot,$departureAirport,$landingAirport, $takeoffTime,$landingTime, $flightDuration, 1);
+            my $flogEntry = flogEntry->new("DEEBU", $dayofFlight,$pilot,$departureAirport,$landingAirport, $takeoffTime,$landingTime, $flightDuration, 1);
 
-            $cpsFlight->print("FLIGHT") if ($debug);
-            push @allFlights, $cpsFlight;
+            $flogEntry->print("FLIGHT") if ($debug);
+            push @allFlights, $flogEntry;
             #print "$dayofFlight | $pilot | $departureAirport | $landingAirport | $takeoffTime | $landingTime | $flightDurationMinutes ($flightHours:$flightMinutes)\n";
         }
         
@@ -296,8 +187,9 @@ sub createFlights {
 }
 
 sub readGpxFile {
+    my $fname = shift;
     my @fa;
-    my $tmpFile = XML::LibXML->load_xml(location => $gpxName);
+    my $tmpFile = XML::LibXML->load_xml(location => $fname);
     my $xpc = XML::LibXML::XPathContext->new($tmpFile);
     $xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
 
@@ -411,4 +303,175 @@ sub readAirportDirectory {
         push @allairports, $ICAO;
     }
 }
+
+# the class representing a point on earth
+package gpxPoint;
+use 5.10.0;
+our $debug;
+
+sub new {
+    my $class = shift;
+    my ( $lat, $lon ) = @_;
+    my $self = bless {
+        lat => $lat,
+        lon => $lon,
+    }, $class;
+    
+    return $self;
+}
+
+sub print {
+    my $self = shift;
+    my $text = shift;
+    say "($text) LAT: " . $self->{'lat'} . " LON: " . $self->{'lon'};
+}
+
+sub lon {
+    my $self = shift;
+    return $self->{lon};
+}
+
+sub lat {
+    my $self = shift;
+    return $self->{lat};
+}
+
+
+sub distance {
+    my $self = shift;
+    my $other = shift;
+    
+    
+    $self->print("SELF") if ($debug);
+    $other->print("OTHER") if ($debug);
+    
+    my $lon2 = Math::Trig::deg2rad($other->lon);
+    my $lon1 = Math::Trig::deg2rad($self->lon);
+    my $lat2 = Math::Trig::deg2rad(90 - $other->lat);
+    my $lat1 = Math::Trig::deg2rad(90 - $self->lat);
+    
+    my $distance = Math::Trig::great_circle_distance($lon1,$lat1,$lon2,$lat2) * 6367 * 1000;
+    
+    $distance = POSIX::ceil($distance);
+    say "DISTANCE $distance" if ($debug);
+    
+    return $distance;
+}
+
+# the class representing a single flight in a flight log
+package flogEntry;
+use 5.10.0;
+use POSIX;
+
+our $debug;
+
+sub new {
+    my $class = shift;
+    my ( $plane, $dof, $pilot, $dap, $lap, $tot, $lat, $duration, $lc ) = @_;
+    my $self = bless {
+        plane => $plane,
+        dayofFlight => $dof,
+        pilot => $pilot,
+        departureAirport => $dap,
+        landingAirport => $lap,
+        takeoffTime => $tot,
+        landingTime => $lat,
+        landingCount => $lc,
+        duration => $duration
+    }, $class;
+    
+    return $self;
+}
+
+sub dayofFlight {
+    my $self = shift;
+    return $self->{'dayofFlight'};
+}
+
+sub departureAirport {
+    my $self = shift;
+    return $self->{'departureAirport'};
+}
+
+sub takeoffTime {
+    my $self = shift;
+    return $self->{'takeoffTime'};
+}
+
+sub landingAirport {
+    my $self = shift;
+    return $self->{'landingAirport'};
+}
+
+sub landingTime {
+    my $self = shift;
+    return $self->{'landingTime'};
+}
+
+sub pilot {
+    my $self = shift;
+    return $self->{'pilot'};
+}
+
+sub plane {
+    my $self = shift;
+    return $self->{'plane'};
+}
+
+sub duration {
+    my $self = shift;
+    return $self->{'duration'};
+}
+
+sub landingCount {
+    my $self = shift;
+    return $self->{'landingCount'};
+}
+
+sub setDepartureAirport {
+    my $self = shift;
+    my $ap = shift;
+    $self->{'departureAirport'} = $ap;
+}
+
+sub setLandingAirport {
+    my $self = shift;
+    my $ap = shift;
+    $self->{'landingAirport'} = $ap;
+}
+
+sub setLandingCount {
+    my $self = shift;
+    my $lc = shift;
+    $self->{'landingCount'} = $lc;
+}
+
+sub setLandingTime {
+    my $self = shift;
+    my $lt = shift;
+    $self->{'landingTime'} = $lt;
+}
+
+sub setDuration {
+    my $self = shift;
+    my $duration = shift;
+    $self->{'duration'} = $duration;
+}
+
+
+sub print {
+    my $self = shift;
+    my $text = shift;
+    $text .= " " . $self->dayofFlight .
+    " | " . $self->pilot .
+    " | " . $self->departureAirport .
+    " | " . $self->takeoffTime .
+    " | " . $self->landingAirport .
+    " | " . $self->landingTime .
+    " | " . ceil($self->duration/60) .
+    " | " . $self->landingCount;
+    
+    say "$text";
+}
+
 
