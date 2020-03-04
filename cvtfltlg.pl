@@ -15,6 +15,7 @@ use File::Temp;
 use CGI;
 use CGI::Carp qw ( fatalsToBrowser );
 
+use JSON;
 
 package main;
 
@@ -25,14 +26,18 @@ my $takeoffSpeed = 60;
 my $landingSpeed = 57;
 my $feet_for_m = 3.28084;
 my $sourceAirport = "";
+my $json = 1;
+my $pilot ="";
 
 GetOptions ("airportDir=s" => \$airportDirectory,
 "pilot=s" => \$pilot,
 "gpxName=s" => \$gpxName,
+"json!" => \$json,
 "debug=s" => \$debug);
 
 $isCGI = isCGI($scriptName);
 say $isCGI if $debug;
+say "json = " . $json if $debug;
 my $cgi_query = initCGI($isCGI);
 
 say $cgi_query if $debug;
@@ -67,7 +72,6 @@ for (my $i = 1; $i <= $#allFlights; $i++) {
             $prev->setLandingTime($this->landingTime);
             $prev->setLandingAirport($this->landingAirport);
             $prev->setLandingCount($prev->landingCount + $this->landingCount);
-            $prev->setDuration($prev->duration + $this->duration);
     }
     else {
         $prev = $this;
@@ -75,9 +79,22 @@ for (my $i = 1; $i <= $#allFlights; $i++) {
     }
 }
 
+
+
 foreach $flight (@jap){
-    $flight->print("Flight") || die "ERROR";
+    if ($json == 1){
+        my $jsf = $flight->get_json("FLIGHT") || die "ERROR JSON";
+        push @jsflights, $jsf;
+    } else {
+        $flight->print("") || die "ERROR";
+    }
 }
+
+my $JS = JSON->new->utf8;
+$JS->convert_blessed(1);
+my $jstest = $JS->encode(\@jap);
+say "$jstest";
+
 
 sub isCGI {
     my $name = shift;
@@ -94,10 +111,12 @@ sub initCGI {
     if ($lisCGI){
         my $cgi_query = CGI->new();
         $debug = $cgi_query->param('debug');
-     
-        print $cgi_query->header;
-        print $cgi_query->start_html;
-        
+
+        if ($json == 1){
+            print $cgi_query->header('application/json');
+        } else {
+            print $cgi_query->start_html;
+        }
 
         return $cgi_query;
     }
@@ -106,25 +125,24 @@ sub initCGI {
 sub getGpxName {
     my $query = shift;
     my $gName = $gpxName;
+
+    if ($isCGI == 1){
     
-    if ($isCGI == 0){
-        return $gName;
-    }
-    
-    my $lfh  = $query->upload('theFile');
-    $tmpfile = File::Temp->new();
-    $gName = $tmpfile->filename;
-    say $gName if $debug;
-    if (defined $lfh) {
-        # Upgrade the handle to one compatible with IO::Handle:
-        my $io_handle = $lfh->handle;
+        my $lfh  = $query->upload('file');
+        $tmpfile = File::Temp->new();
+        $gName = $tmpfile->filename;
+        say $gName if $debug;
+        if (defined $lfh) {
+            # Upgrade the handle to one compatible with IO::Handle:
+            my $io_handle = $lfh->handle;
         
-        while ($bytesread = read($io_handle, $buffer, 1024)) {
-            print $tmpfile $buffer;
+            while ($bytesread = read($io_handle, $buffer, 1024)) {
+                print $tmpfile $buffer;
+            }
+            close $tmpfile;
         }
-        close $tmpfile;
-        return $gName;
     }
+    return $gName;
 }
 
 sub createFlights {
@@ -151,9 +169,7 @@ sub createFlights {
         if ($distance > 5000){
             $ap = "Unknown";
         }
-        my ($sec,$min,$hour,$day,$month, $year, $zone) = strptime($time);
-        $year += 1900;
-        $month++;
+
         my $timeseconds = str2time($time);
         
         if ($evt eq "takeoff"){
@@ -161,21 +177,16 @@ sub createFlights {
                 say "WARNING: takeoff but Flying - $event";
             }
             $isFlying = 1;
-            $dayofFlight = "$day.$month.$year";
-            $takeoffTime = "$hour:$min";
-            $takeoffepoch = $timeseconds;
+            $takeoffTime = $timeseconds;
             $departureAirport = $ap;
         } else {
             if ($isFlying == 0){
                 say "WARNING: landing but not flying - $event";
             }
             $isFlying = 0;
-            $flightDuration = $timeseconds - $takeoffepoch;
-            #$flightHours = floor($flightDurationMinutes/60);
-            #$flightMinutes = $flightDurationMinutes - 60*$flightHours;
             $landingAirport = $ap;
-            $landingTime = "$hour:$min";
-            my $flogEntry = flogEntry->new("DEEBU", $dayofFlight,$pilot,$departureAirport,$landingAirport, $takeoffTime,$landingTime, $flightDuration, 1);
+            $landingTime = $timeseconds;
+            my $flogEntry = flogEntry->new("DEEBU", $pilot,$departureAirport,$landingAirport, $takeoffTime,$landingTime, 1);
 
             $flogEntry->print("FLIGHT") if ($debug);
             push @allFlights, $flogEntry;
@@ -252,7 +263,7 @@ sub findNearestAirport {
             $nix = $i;
             $nearest = $dist;
             say "NEAREST $nix $dist" if ($debug);
-            if ($dist < 5000) {
+            if ($dist < 2000) {
                 say "PERFECT match -> break LOOP" if ($debug);
                 last;
             }
@@ -367,17 +378,15 @@ our $debug;
 
 sub new {
     my $class = shift;
-    my ( $plane, $dof, $pilot, $dap, $lap, $tot, $lat, $duration, $lc ) = @_;
+    my ( $plane, $pilot, $dap, $lap, $tot, $lat, $lc ) = @_;
     my $self = bless {
         plane => $plane,
-        dayofFlight => $dof,
         pilot => $pilot,
         departureAirport => $dap,
         landingAirport => $lap,
         takeoffTime => $tot,
         landingTime => $lat,
         landingCount => $lc,
-        duration => $duration
     }, $class;
     
     return $self;
@@ -385,7 +394,13 @@ sub new {
 
 sub dayofFlight {
     my $self = shift;
-    return $self->{'dayofFlight'};
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+                                                   gmtime($self->takeoffTime);
+    $mon++; $year += 1900;
+    $mon = ($mon >= 10 ? $mon : "0" . $mon);
+    $mday = ($mday >= 10 ? $mday : "0" . $mday);
+    
+    return "$mday" . ":" . $mon . ":" . $year ;
 }
 
 sub departureAirport {
@@ -395,7 +410,16 @@ sub departureAirport {
 
 sub takeoffTime {
     my $self = shift;
-    return $self->{'takeoffTime'};
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+                                                   gmtime($self->takeoffTime);
+    $hour = ($hour >= 10 ? $hour : "0" . $hour);
+    $min = ($min >= 10 ? $min : "0" . $min);
+    return $hour . ":" . $min;
+}
+
+sub takeoffTime_seconds {
+    my $self = shift;
+    return $self->takeoffTime;
 }
 
 sub landingAirport {
@@ -405,7 +429,16 @@ sub landingAirport {
 
 sub landingTime {
     my $self = shift;
-    return $self->{'landingTime'};
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+                                                   gmtime($self->landingTime);
+    $hour = ($hour >= 10 ? $hour : "0" . $hour);
+    $min = ($min >= 10 ? $min : "0" . $min);
+    return $hour . ":" . $min;
+}
+
+sub landingTime_seconds {
+    my $self = shift;
+    return $self->landingTime;
 }
 
 sub pilot {
@@ -416,11 +449,6 @@ sub pilot {
 sub plane {
     my $self = shift;
     return $self->{'plane'};
-}
-
-sub duration {
-    my $self = shift;
-    return $self->{'duration'};
 }
 
 sub landingCount {
@@ -452,24 +480,28 @@ sub setLandingTime {
     $self->{'landingTime'} = $lt;
 }
 
-sub setDuration {
-    my $self = shift;
-    my $duration = shift;
-    $self->{'duration'} = $duration;
-}
+sub TO_JSON { return { %{ shift() } }; }
 
+sub get_json {
+    my $self = shift;
+    my $JSON = JSON->new->utf8;
+    $JSON->convert_blessed(1);
+ 
+    my $json = $JSON->encode($self);
+    return $json;
+}
 
 sub print {
     my $self = shift;
     my $text = shift;
-    $text .= " " . $self->dayofFlight .
-    " | " . $self->pilot .
-    " | " . $self->departureAirport .
-    " | " . $self->takeoffTime .
-    " | " . $self->landingAirport .
-    " | " . $self->landingTime .
-    " | " . ceil($self->duration/60) .
-    " | " . $self->landingCount;
+    
+    
+    $text .= $self->pilot .
+    ";" . $self->departureAirport .
+    ";" . $self->takeoffTime() .
+    ";" . $self->landingAirport .
+    ";" . $self->landingTime() .
+    ";" . $self->landingCount;
     
     say "$text";
 }
