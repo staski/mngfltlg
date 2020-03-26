@@ -194,7 +194,7 @@ sub validateFlight {
     my $takeoff_s = $flight->takeoffTime_seconds;
     my $tmp_s;
     
-    for (my $i = 0; $i < $#allflights; $i++){
+    for (my $i = 0; $i <= $#allflights; $i++){
 
         $l_tot_s = $allflights[$i]->takeoffTime_seconds;
         $l_lt_s = $allflights[$i]->landingTime_seconds;
