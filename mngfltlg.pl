@@ -77,7 +77,6 @@ if ($action  eq "update" && $request_method eq "POST"){
 }
 
 if ($action eq "create"){
-    my $prev;
     my $source = readAirportDirectory();
     $sapt = gpxPoint->new($lat{$source},$lon{$source});
 
@@ -92,11 +91,21 @@ if ($action eq "create"){
 
     # join those entries where the takeoff is from the same AP as the landing of the previous and this
     # one
-    push @jap, $allFlights[0];
-    $prev= $allFlights[0];
-    for (my $i = 1; $i <= $#allFlights; $i++) {
-        my $this = $allFlights[$i];
-        #my $prev = $allFlights[$i - 1];
+    joinFlights(@allFlights);
+    
+    my $JS = JSON->new->utf8;
+    $JS->convert_blessed(1);
+    my $jstest = $JS->encode(\@jap);
+    say "$jstest";
+}
+
+sub joinFlights {
+    my @af = @_;
+    my $prev= $af[0];
+
+    push @jap, $prev;
+    for (my $i = 1; $i <= $#af; $i++) {
+        my $this = $af[$i];
         $prev->print("PREV") if ($debug);
         $this->print("THIS") if ($debug);
         if ($prev->landingAirport eq $this->departureAirport &&
@@ -111,12 +120,8 @@ if ($action eq "create"){
             push @jap, $this;
         }
     }
-
-    my $JS = JSON->new->utf8;
-    $JS->convert_blessed(1);
-    my $jstest = $JS->encode(\@jap);
-    say "$jstest";
 }
+
 
 sub isCGI {
     my $name = shift;
@@ -315,7 +320,6 @@ sub createFlights {
 
         my $timeseconds = str2time($time);
         
-        say STDERR "evt: $evt time: $time timeseconds: $timeseconds";
         if ($evt eq "takeoff"){
             if ($isFlying == 1){
                 say "WARNING: takeoff but Flying - $event";
