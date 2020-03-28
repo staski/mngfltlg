@@ -26,18 +26,15 @@ my $takeoffSpeed = 60;
 my $landingSpeed = 57;
 my $feet_for_m = 3.28084;
 my $sourceAirport = "";
-my $json = 1;
 my $pilot ="";
 
 GetOptions ("airportDir=s" => \$airportDirectory,
 "pilot=s" => \$pilot,
 "gpxName=s" => \$gpxName,
-"json!" => \$json,
 "debug=s" => \$debug);
 
 $isCGI = isCGI($scriptName);
 say $isCGI if $debug;
-say "json = " . $json if $debug;
 my $cgi_query = initCGI($isCGI);
 
 say $cgi_query if $debug;
@@ -82,12 +79,8 @@ for (my $i = 1; $i <= $#allFlights; $i++) {
 
 
 foreach $flight (@jap){
-    if ($json == 1){
-        my $jsf = $flight->get_json("FLIGHT") || die "ERROR JSON";
-        push @jsflights, $jsf;
-    } else {
-        $flight->print("") || die "ERROR";
-    }
+    my $jsf = $flight->get_json("FLIGHT") || die "ERROR JSON";
+    push @jsflights, $jsf;
 }
 
 my $JS = JSON->new->utf8;
@@ -112,11 +105,7 @@ sub initCGI {
         my $cgi_query = CGI->new();
         $debug = $cgi_query->param('debug');
 
-        if ($json == 1){
-            print $cgi_query->header('application/json');
-        } else {
-            print $cgi_query->start_html;
-        }
+        print $cgi_query->header('application/json');
 
         return $cgi_query;
     }
