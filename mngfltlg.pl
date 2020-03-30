@@ -33,7 +33,6 @@ my $request_method;
 my $gpxName = 'ttfExample.gpx';
 my $sapt;
 
-my @allids;
 my $highestid = 0;
 my $highestidx;
 my $plane = "DEEBU";
@@ -71,7 +70,16 @@ if ($action  eq "update" && $request_method eq "POST"){
     my $flight = flogEntry->read_json($postdata);
     $flight->print("FLIGHT") if $debug;
     print "FLIGHTS before $#allflights\n" if $debug;
-    addLogEntry($flight);
+    updateLogEntry($flight);
+    print "FLIGHTS after $#allflights\n" if $debug;
+    writeLog($glogFile);
+}
+
+if ($action  eq "delete" && $request_method eq "POST"){
+    my $flight = flogEntry->read_json($postdata);
+    $flight->print("FLIGHT") if $debug;
+    print "FLIGHTS before $#allflights\n" if $debug;
+    deleteLogEntry($flight);
     print "FLIGHTS after $#allflights\n" if $debug;
     writeLog($glogFile);
 }
@@ -92,6 +100,14 @@ if ($action eq "create"){
     # join those entries where the takeoff is from the same AP as the landing of the previous and this
     # one
     joinFlights(@allFlights);
+    
+    foreach my $flight (@jap) {
+        if (addLogEntry($flight) == 0){
+                say "LogEntry exists ID: " . $flight->id() . "\n" if $debug;
+        }
+    }
+    
+    writeLog($glogFile);
     
     my $JS = JSON->new->utf8;
     $JS->convert_blessed(1);
@@ -141,7 +157,7 @@ sub initCGI {
         $action = $cgi_query->url_param('action');
         $request_method = $cgi_query->request_method();
         
-        if ($action eq "update"){
+        if ($action eq "update" || $action eq "delete"){
             $postdata = $cgi_query->param('POSTDATA');
         }
         
@@ -192,9 +208,8 @@ sub readLog {
         next unless (/\d+;\w+;/);
         my ( $id, $pilot, $departure, $destination, $takeoff, $arrival, $landings ) = split(/;/);
         chop($landings);
-        my $flight = new flogEntry ($plane, $pilot, $departure, $destination, $takeoff, $arrival, $landings);
+        my $flight = new flogEntry ($id, $plane, $pilot, $departure, $destination, $takeoff, $arrival, $landings);
         push @allflights,$flight;
-        push @allids, $id;
         if ($id >= $highestid){
             $highestid = $id;
         }
@@ -207,9 +222,8 @@ sub writeLog {
     my $line, $id;
     open (LOGFILE, ">$logFile") || die "unable to open logfile: $logFile: $!";
     for (my $i = 0; $i <= $#allflights; $i++){
-        $id = $allids[$i];
-        print "ID: $id I: $i $allflights[$i]\n" if $debug;
-        $line = $allflights[$i]->logFileEntry("$id");
+        print "I: $i $allflights[$i]\n" if $debug;
+        $line = $allflights[$i]->logFileEntry("");
         print LOGFILE "$line\n";
     }
     close (LOGFILE);
@@ -221,15 +235,15 @@ sub addLogEntry {
     my $IDX=-1;
     my $result = validateFlight($flight);
     
-    if ($result != 1){
+    if ($result != 0){
         print "invalid flight: " . $flight->print() if $debug;
         return 0;
     }
 
+    $flight->setId($highestid + 1); $highestid++;
     if ($#allflights == -1){
         print "new flightlog\n" if $debug;
         push(@allflights, $flight);
-        push(@allids,$highestid + 1);
         return 1;
     }
     
@@ -237,33 +251,84 @@ sub addLogEntry {
         my $takeoff = $allflights[$i]->takeoffTime_seconds;
         if ($flight->takeoffTime_seconds > $takeoff){
             $IDX = $i;
-            $flight->print("Insert after $IDX");
+#            $flight->print("Insert after $IDX");
             $i = -1;
         }
     }
 
     splice (@allflights, $IDX +1, 0, $flight);
-    splice (@allids, $IDX+1, 0, $highestid + 1);
-    #my $ttf = $allflights[0]->takeoffTime();
-    #say "$flight ALL $#allflights" if $debug;
+    return 1;
 }
+
+sub updateLogEntry {
+    my $flight = shift;
+    my $result = validateFlight($flight);
+    
+    if ($result != -1){
+        print "invalid flight: " . $flight->print() if $debug;
+        return 0;
+    }
+
+    for (my $i = $#allflights; $i >= 0; $i--){
+        if ($flight->id == $allflights[$i]->id){
+            $IDX = $i;
+            $i = -1;
+        }
+    }
+
+    splice (@allflights, $IDX, 1, $flight);
+    return 1;
+}
+
+sub deleteLogEntry {
+    my $flight = shift;
+    my $result = validateFlight($flight);
+    
+    if ($result != -1){
+        print "invalid flight: " . $flight->print() if $debug;
+        return 0;
+    }
+
+    for (my $i = $#allflights; $i >= 0; $i--){
+        if ($flight->id == $allflights[$i]->id){
+            $IDX = $i;
+            $i = -1;
+        }
+    }
+
+    splice (@allflights, $IDX, 1);
+    return 1;
+}
+
+#check a given flight if it alread exists
+#return -1 if it's id is not initial
+#return -2 if it's departure time is in between any other flight
+#return  0 otherwise
 
 sub validateFlight {
     my $flight = shift;
     my $takeoff_s = $flight->takeoffTime_seconds;
     my $tmp_s;
     
+    if ($flight->hasValidId() == 1){
+        return -1;
+    }
+    
     for (my $i = 0; $i <= $#allflights; $i++){
 
         $l_tot_s = $allflights[$i]->takeoffTime_seconds;
         $l_lt_s = $allflights[$i]->landingTime_seconds;
         if ($takeoff_s >= $l_tot_s && $takeoff_s <= $l_lt_s){
-                say "conflicting flight" if $debug;
+            say "conflicting flight" if $debug;
+                
+            if ($takeoff_s == $l_tot_s) {
+                $flight->setId($allflights[$i]->id);
+            }
                 push @returnLogs, $allflights[$i];
-                return 0;
+                return -2;
         }
     }
-    return 1;
+    return 0;
 }
 
 sub logToJSON {
@@ -334,7 +399,7 @@ sub createFlights {
             $isFlying = 0;
             $landingAirport = $ap;
             $landingTime = $timeseconds;
-            my $flogEntry = flogEntry->new("DEEBU", $pilot,$departureAirport,$landingAirport, $takeoffTime,$landingTime, 1);
+            my $flogEntry = flogEntry->new(-1, "DEEBU", $pilot,$departureAirport,$landingAirport, $takeoffTime,$landingTime, 1);
 
             $flogEntry->print("FLIGHT") if ($debug);
             push @allFlights, $flogEntry;
@@ -539,8 +604,9 @@ our $debug;
 
 sub new {
     my $class = shift;
-    my ( $plane, $pilot, $dap, $lap, $tot, $lat, $lc ) = @_;
+    my ( $id, $plane, $pilot, $dap, $lap, $tot, $lat, $lc ) = @_;
     my $self = bless {
+        id => $id,
         plane => $plane,
         pilot => $pilot,
         departureAirport => $dap,
@@ -617,6 +683,11 @@ sub pilot {
     return $self->{'pilot'};
 }
 
+sub id {
+    my $self = shift;
+    return $self->{'id'};
+}
+
 sub plane {
     my $self = shift;
     return $self->{'plane'};
@@ -656,6 +727,17 @@ sub setLandingTime {
     $self->{'landingTime'} = $lt;
 }
 
+sub setId {
+    my $self = shift;
+    my $mid = shift;
+    $self->{'id'} = $mid;
+}
+
+sub hasValidId {
+    my $self = shift;
+    return $self->{'id'} < 0 ? 0 : 1;
+}
+
 sub TO_JSON { return { %{ shift() } }; }
 
 sub print_json {
@@ -680,7 +762,9 @@ sub read_json {
 sub logFileEntry {
     my $self = shift;
     my $text = shift;
-    $text .= ";" . $self->pilot .
+    $text .=
+    $self->id .
+    ";" . $self->pilot .
     ";" . $self->departureAirport .
     ";" . $self->landingAirport .
     ";" . $self->takeoffTime_seconds() .
