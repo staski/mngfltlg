@@ -37,6 +37,11 @@ my $highestid = 0;
 my $highestidx;
 my $plane = "DEEBU";
 
+%pilot_for_user {
+        axel => "Axel",
+        markus => "Markus",
+        cp => "CP",
+};
 
 GetOptions ("debug=s" => \$debug,
             "action=s" => \$caction,
@@ -85,6 +90,9 @@ if ($action  eq "delete" && $request_method eq "POST"){
 }
 
 if ($action eq "create"){
+    my $l_username = $ENV{"REMOTE_USER"};
+    $pilot = defined($pilot_for_user{$l_username}) ? $pilot_for_user{$l_username} : "Unknown";
+    
     my $source = readAirportDirectory();
     $sapt = gpxPoint->new($lat{$source},$lon{$source});
 
@@ -100,10 +108,18 @@ if ($action eq "create"){
     # join those entries where the takeoff is from the same AP as the landing of the previous and this
     # one
     joinFlights(@allFlights);
-    
+
     foreach my $flight (@jap) {
+        $flight->setPilot($pilot);
         if (addLogEntry($flight) == 0){
                 say "LogEntry exists ID: " . $flight->id() . "\n" if $debug;
+        }
+        else {
+            # check if directory 'flights/yearofflight exists
+            # create directory flights/yearofflight/flight->id
+            # copy gpxFile to flights/aearofFlight/flight->id
+            # write: timestamp AND log-entry into file log.txt
+            # write: file details.txt (containing ...)
         }
     }
     
@@ -163,6 +179,7 @@ sub initCGI {
         
         if ($action eq "create"){
             $gpxName = getGpxName($cgi_query);
+            
         }
 
         if ($json == 1){
@@ -366,8 +383,19 @@ sub createFlights {
         $isFlying = 1;
     }
     #TODO : Check if first event is landing
-
-    foreach $event (@takeOff){
+    my $skipnext = 0;
+    my $count = 0;
+    my $last = 0;
+    
+EVENT:    foreach $event (@takeOff){
+    
+        
+        if ($count == $#takeOff){
+            $last = 1;
+        } else {
+            $count++;
+        }
+        
         my ($evt,$time,$lat,$lon,$ele,$speed) = split (/;/, $event);
         say STDERR "EVT: $evt $time $lat $lon $ele $speed" if ($debug);
         
@@ -386,9 +414,15 @@ sub createFlights {
         my $timeseconds = str2time($time);
         
         if ($evt eq "takeoff"){
+            if ($skipnext == 1){
+                $skipnext = 0;
+                next EVENT;
+            }
+
             if ($isFlying == 1){
                 say "WARNING: takeoff but Flying - $event";
             }
+            
             $isFlying = 1;
             $takeoffTime = $timeseconds;
             $departureAirport = $ap;
@@ -396,6 +430,17 @@ sub createFlights {
             if ($isFlying == 0){
                 say "WARNING: landing but not flying - $event";
             }
+            if ($ap eq "Unknown" && $last == 0){
+                $skipnext = 1;
+                next EVENT;
+            }
+            
+            $apelevation = $alt_ft{$ap};
+            if ($ele > $apelevation + 100){
+                $skipnext = 1;
+                next EVENT;
+            }
+            
             $isFlying = 0;
             $landingAirport = $ap;
             $landingTime = $timeseconds;
@@ -413,7 +458,7 @@ sub createFlights {
 
 sub readGpxFile {
     my $takeoffSpeed = 60;
-    my $landingSpeed = 57;
+    my $landingSpeed = 55;
     my $feet_for_m = 3.28084;
 
     my $fname = shift;
@@ -701,6 +746,12 @@ sub duration {
 sub landingCount {
     my $self = shift;
     return $self->{'landingCount'};
+}
+
+sub setPilot {
+        my $self = shift;
+        my $pilot = shift;
+        $self->{'pilot'} = $pilot;
 }
 
 sub setDepartureAirport {
