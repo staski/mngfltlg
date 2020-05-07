@@ -37,11 +37,13 @@ my $highestid = 0;
 my $highestidx;
 my $plane = "DEEBU";
 
-%pilot_for_user {
+%pilot_for_user = (
         axel => "Axel",
         markus => "Markus",
         cp => "CP",
-};
+        test => "TestPilot",
+        testPilot => "TestPilot"
+);
 
 GetOptions ("debug=s" => \$debug,
             "action=s" => \$caction,
@@ -53,6 +55,15 @@ GetOptions ("debug=s" => \$debug,
 $isCGI = isCGI($scriptName);
 
 my $cgi_query = initCGI($isCGI);
+
+$l_username = $ENV{'REDIRECT_REMOTE_USER'} || $ENV{'REMOTE_USER'};
+
+if ($l_username eq "test"){
+        $glogFile = "flights/test-flightLog.txt";
+} elsif ($l_username eq "testint"){
+    $glogFile = "flights/testint-flightLog.txt";
+}
+    
 
 $action = getAction($isCGI);
 say "ACTION=$action" if $debug;
@@ -90,9 +101,13 @@ if ($action  eq "delete" && $request_method eq "POST"){
 }
 
 if ($action eq "create"){
-    my $l_username = $ENV{"REMOTE_USER"};
-    $pilot = defined($pilot_for_user{$l_username}) ? $pilot_for_user{$l_username} : "Unknown";
-    
+#    foreach my $key (sort(keys(%ENV))) {
+#        $l_username .= "$key = $ENV{$key} || ";
+#    }
+
+    my $l_username = $ENV{'REDIRECT_REMOTE_USER'};
+    $pilot = defined($pilot_for_user{$l_username}) ? $pilot_for_user{$l_username} : "$l_username";
+
     my $source = readAirportDirectory();
     $sapt = gpxPoint->new($lat{$source},$lon{$source});
 
