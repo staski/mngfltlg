@@ -37,6 +37,13 @@ my $highestid = 0;
 my $highestidx;
 my $plane = "DEEBU";
 
+$version_major = 0;
+$version_minor = 90;
+
+#the highest id *ever* found in the log. This number is strictly increasing
+#over time
+$loghighestid = 0;
+
 %pilot_for_user = (
         axel => "Axel",
         markus => "Markus",
@@ -235,8 +242,18 @@ sub getActionParams {
 
 sub readLog {
     my $logFile = shift;
+    my $logversion_major = 0;
+    my $logversion_minor = 0;
+    
     open (LOGFILE, "<$logFile") || warn "unable to open logfile: $logFile: $!";
+    
     while (<LOGFILE>){
+        if (/FLTLGHDR;(\d+)\.(\d+);(\d+)/){
+            $logversion_major = $1;
+            $logversion_minor = $2;
+            $loghighestid = $3;
+            $highestid = $loghighestid;
+        }
         next unless (/\d+;\w+;/);
         my ( $id, $pilot, $departure, $destination, $takeoff, $arrival, $landings ) = split(/;/);
         chop($landings);
@@ -253,6 +270,7 @@ sub writeLog {
     my $logFile = shift;
     my $line, $id;
     open (LOGFILE, ">$logFile") || die "unable to open logfile: $logFile: $!";
+    print LOGFILE "FLTLGHDR;$version_major.$version_minor;$highestid\n";
     for (my $i = 0; $i <= $#allflights; $i++){
         print "I: $i $allflights[$i]\n" if $debug;
         $line = $allflights[$i]->logFileEntry("");
