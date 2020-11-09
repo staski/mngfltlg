@@ -39,7 +39,7 @@ my $highestidx;
 my $plane = "DEEBU";
 
 $version_major = 0;
-$version_minor = 91;
+$version_minor = 92;
 
 #the highest id *ever* found in the log. This number is strictly increasing
 #over time
@@ -104,7 +104,7 @@ if ($action  eq "update" && $request_method eq "POST"){
 
 if ($action  eq "delete" && $request_method eq "POST"){
     my $flight = flogEntry->read_json($postdata);
-    $flight->print("FLIGHT") if $debug;
+#    $flight->print("FLIGHT") if $debug;
     print MYDEBUG  "FLIGHTS before $#allflights\n" if $debug;
     deleteLogEntry($flight);
     print MYDEBUG  "FLIGHTS after $#allflights\n" if $debug;
@@ -136,8 +136,10 @@ if ($action eq "create"){
 
     foreach my $flight (@jap) {
         $flight->setPilot($pilot);
-        if (addLogEntry($flight) == 0){
-                say MYDEBUG  "LogEntry exists ID: " . $flight->id() . "\n" if $debug;
+        my $result = addLogEntry($flight);
+        if ($result > 0){
+                $flight->setId($result);
+                print MYDEBUG  "LogEntry exists ID: " . $result . "\n" if $debug;
         }
         else {
             # check if directory 'flights/yearofflight exists
@@ -167,9 +169,10 @@ sub joinFlights {
         $prev->print("PREV") if ($debug);
         $this->print("THIS") if ($debug);
         if ($prev->landingAirport eq $this->departureAirport &&
-            $this->landingAirport eq $this->departureAirport){
+            $this->landingAirport eq $this->departureAirport && ($this->takeoffTime_seconds - $prev->landingTime_seconds < 60)){
                 say MYDEBUG  "HIT" if ($debug);
                 $prev->setLandingTime($this->landingTime_seconds);
+                $prev->setOnBlockTime($this->onBlock_seconds);
                 $prev->setLandingAirport($this->landingAirport);
                 $prev->setLandingCount($prev->landingCount + $this->landingCount);
         }
@@ -253,7 +256,8 @@ sub readLog {
     my $logversion_minor = 0;
 
     my $id, $pilot, $plane, $departure, $destination, 
-                $offblock, $takeoff, $arrival, $onblock, $landings;
+                $offblock, $takeoff, $arrival, $onblock, $landings,
+                $rules, $function;
 
     open (LOGFILE, "<$logFile") || warn "unable to open logfile: $logFile: $!";
     
@@ -270,16 +274,27 @@ sub readLog {
             ( $id, $pilot, $departure, $destination, $takeoff, $arrival, $landings ) = split(/;/);
             $offblock = $takeoff;
             $onblock = $arrival;
+            $rules ="VFR";
+            $function ="PIC";
         }
-        else 
+        elsif ($logversion_major == 0 && $logversion_minor <= 91)
         {
             ( $id, $pilot, $plane, $departure, $destination, 
                 $offblock, $takeoff, $arrival, $onblock, $landings ) = split(/;/);
-        }
+            $rules ="VFR";
+            $function ="PIC";
 
+        }
+        else
+        {
+            ( $id, $pilot, $plane, $departure, $destination,
+                $offblock, $takeoff, $arrival, $onblock,
+                $rules, $function, $landings ) = split(/;/);
+
+        }
         chop($landings);
         my $flight = new flogEntry ($id, $pilot, $plane, $departure, $destination, 
-            $offblock, $takeoff, $arrival, $onblock, $landings);
+            $offblock, $takeoff, $arrival, $onblock, $rules, $function, $landings);
         
         say MYDEBUG $flight->departureAirport . "$departure" if $debug;
         
@@ -311,15 +326,15 @@ sub addLogEntry {
     my $result = validateFlight($flight);
     
     if ($result != 0){
-        print MYDEBUG  "invalid flight: " . $flight->print() if $debug;
-        return 0;
+        print MYDEBUG  "invalid flight: " . $flight->logFileEntry() . "\n" if $debug;
+        return $result;
     }
 
     $flight->setId($highestid + 1); $highestid++;
     if ($#allflights == -1){
         print MYDEBUG  "new flightlog\n" if $debug;
         push(@allflights, $flight);
-        return 1;
+        return 0;
     }
     
     for (my $i = $#allflights; $i >= 0; $i--){
@@ -332,14 +347,14 @@ sub addLogEntry {
     }
 
     splice (@allflights, $IDX +1, 0, $flight);
-    return 1;
+    return 0;
 }
 
 sub updateLogEntry {
     my $flight = shift;
     my $result = validateFlight($flight);
     
-    if ($result != -1){
+    if ($result == 0){
         print MYDEBUG  "invalid flight: " . $flight->print() if $debug;
         return 0;
     }
@@ -359,7 +374,7 @@ sub deleteLogEntry {
     my $flight = shift;
     my $result = validateFlight($flight);
     
-    if ($result != -1){
+    if ($result == 0){
         print MYDEBUG  "invalid flight: " . $flight->print() if $debug;
         return 0;
     }
@@ -375,9 +390,9 @@ sub deleteLogEntry {
     return 1;
 }
 
-#check a given flight if it alread exists
-#return -1 if it's id is not initial
-#return -2 if it's departure time is in between any other flight
+#check a given flight if it already exists
+#return id if it's id is not initial
+#return id if it's departure time is in between any other flight
 #return  0 otherwise
 
 sub validateFlight {
@@ -386,21 +401,25 @@ sub validateFlight {
     my $tmp_s;
     
     if ($flight->hasValidId() == 1){
-        return -1;
+        print MYDEBUG "flight already has ID: " . $flight->id() . "\n" if $debug;
+        return $flight->id();
     }
     
+    #  TODO: when storing flights, timers might get rounded to the next minute
+    #  this might interfere with this heuristic
+    #  
     for (my $i = 0; $i <= $#allflights; $i++){
+        $l_tot_s = $allflights[$i]->offBlock_seconds;
+        $l_lt_s = $allflights[$i]->onBlock_seconds;
+          if ($takeoff_s >= $l_tot_s && $takeoff_s < $l_lt_s){
+                my $lid = $allflights[$i]->id;
+                say MYDEBUG  "conflicting flight $lid $takeoff_s $l_tot_s $l_lt_s\n" if $debug;
 
-        $l_tot_s = $allflights[$i]->takeoffTime_seconds;
-        $l_lt_s = $allflights[$i]->landingTime_seconds;
-        if ($takeoff_s >= $l_tot_s && $takeoff_s <= $l_lt_s){
-            say MYDEBUG  "conflicting flight" if $debug;
-                
-            if ($takeoff_s == $l_tot_s) {
-                $flight->setId($allflights[$i]->id);
-            }
+                if ($takeoff_s == $l_tot_s) {
+                    $flight->setId($lid);
+                }
                 push @returnLogs, $allflights[$i];
-                return -2;
+                return $lid;
         }
     }
     return 0;
@@ -446,14 +465,16 @@ sub createFlights {
     my $count = 0;
     my $last = 0;
     my $previous = "";
+    my $nextTakeoffNewFlight = 0;
     
 EVENT:    foreach $event (@takeOff)
     {
         if ($count == $#takeOff){
             $last = 1;
-        } else {
-            $count++;
-        }
+        } 
+        
+        $count++;
+        
         
         my ($evt,$time,$lat,$lon,$ele,$speed) = split (/;/, $event);
         say MYDEBUG  "EVT: $evt $time $lat $lon $ele $speed ($previous)" if ($debug);
@@ -514,10 +535,10 @@ EVENT:    foreach $event (@takeOff)
             }
             
             #complete previous segment
-            if ($previous eq "landing")
+            if ($nextTakeoffNewFlight == 1)
             {
                 my $flogEntry = flogEntry->new(-1, $pilot,"DEEBU", $departureAirport,
-                $landingAirport, $offblockTime, $takeoffTime,$landingTime,$timeseconds, 1);
+                $landingAirport, $offblockTime, $takeoffTime,$landingTime,$timeseconds, "VFR", "PIC", 1);
                 
                 $flogEntry->print("FLIGHT") if ($debug);
                 push @newSegments, $flogEntry;
@@ -525,6 +546,7 @@ EVENT:    foreach $event (@takeOff)
                 $isFlying = 1;
                 $offblockTime = $takeoffTime = $timeseconds;
                 $departureAirport = $landingAirport;
+                $nextTakeoffNewFlight = 0;
                 #print "$dayofFlight | $pilot | $departureAirport | $landingAirport | $takeoffTime | $landingTime | $flightDurationMinutes ($flightHours:$flightMinutes)\n";
             }
             elsif ($previous eq "offblock")
@@ -559,6 +581,7 @@ EVENT:    foreach $event (@takeOff)
             $landingAirport = $ap;
             $landingTime = $timeseconds;
             $previous = "landing";
+            $nextTakeoffNewFlight = 1;
         }
         elsif ($evt eq "onblock")
         {
@@ -566,7 +589,7 @@ EVENT:    foreach $event (@takeOff)
             $previous = "onblock";
             if ($last == 1){
                 my $flogEntry = flogEntry->new(-1, $pilot, "DEEBU", $departureAirport,$landingAirport, 
-                    $offblockTime, $takeoffTime,$landingTime,$onblockTime, 1);
+                    $offblockTime, $takeoffTime,$landingTime,$onblockTime, "VFR", "PIC", 1);
                 
                 $flogEntry->print("FLIGHT") if ($debug);
                 push @newSegments, $flogEntry;
@@ -586,8 +609,8 @@ EVENT:    foreach $event (@takeOff)
 
 
 sub readGpxFile {
-    my $takeoffSpeed = 60;
-    my $landingSpeed = 55;
+    my $takeoffSpeed = 61;
+    my $landingSpeed = 60;
     my $taxiSpeed = 5;
     my $feet_for_m = 3.28084;
 
@@ -661,6 +684,10 @@ sub readGpxFile {
         
         
         
+    }
+    if ($isTaxi == 1){
+        $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
+        $count++;
     }
     return @fa;
 }
@@ -816,9 +843,10 @@ use POSIX;
 
 our $debug;
 
+
 sub new {
     my $class = shift;
-    my ( $id, $pilot, $plane, $dap, $lap, $offblock, $tot, $lat, $onblock, $lc ) = @_;
+    my ( $id, $pilot, $plane, $dap, $lap, $offblock, $tot, $lat, $onblock, $rls, $fctn, $lc ) = @_;
     my $self = bless {
         id => $id,
         plane => $plane,
@@ -829,6 +857,8 @@ sub new {
         takeoffTime => $tot,
         landingTime => $lat,
         onBlock => $onblock,
+        rules => $rls,
+        function => $fctn,
         landingCount => $lc,
     }, $class;
     
@@ -947,6 +977,28 @@ sub landingCount {
     return $self->{'landingCount'};
 }
 
+sub rules {
+    my $self = shift;
+    return $self->{'rules'};
+}
+
+sub function {
+    my $self = shift;
+    return $self->{'function'};
+}
+
+sub setRules {
+        my $self = shift;
+        my $rules = shift;
+        $self->{'rules'} = $rules;
+}
+
+sub setFuntion {
+        my $self = shift;
+        my $function = shift;
+        $self->{'function'} = $function;
+}
+
 sub setPilot {
         my $self = shift;
         my $pilot = shift;
@@ -977,10 +1029,16 @@ sub setLandingTime {
     $self->{'landingTime'} = $lt;
 }
 
+sub setOnBlockTime {
+    my $self = shift;
+    my $lt = shift;
+    $self->{'onBlock'} = $lt;
+}
+
 sub setId {
     my $self = shift;
     my $mid = shift;
-    $self->{'id'} = $mid;
+    $self->{'id'} = "$mid";
 }
 
 sub hasValidId {
@@ -1022,6 +1080,8 @@ sub logFileEntry {
     ";" . $self->takeoffTime_seconds() .
     ";" . $self->landingTime_seconds() .
     ";" . $self->onBlock_seconds() .
+    ";" . $self->rules .
+    ";" . $self->function .
     ";" . $self->landingCount;
 
     say "$text" if $debug;
@@ -1041,9 +1101,11 @@ sub print {
     ";" . $self->landingAirport .
     ";" . $self->landingTime_seconds .
     ";" . $self->onBlock_seconds .
+    ";" . $self->rules .
+    ";" . $self->function .
     ";" . $self->landingCount;
     
-    say MYDEBUG "$text";
+    say main::MYDEBUG "$text\n";
 }
 
 
