@@ -12,6 +12,8 @@ use Date::Parse;
 use Math::Trig;
 use POSIX;# for floor etc.
 use File::Temp;
+use File::Copy;
+use File::Path;
 
 
 use CGI;
@@ -26,7 +28,8 @@ my $scriptName = $0;
 
 my $caction = "read";
 my $json = 1;
-my $glogFile = "./flights/flightLog.txt";
+$flightdir = "./flights";
+my $glogFile = $flightdir . "/flightLog.txt";
 
 my $postdata;
 my $request_method;
@@ -45,7 +48,7 @@ $version_minor = 92;
 #over time
 $loghighestid = 0;
 $debug_var;
-$tracefile = "./flights/trace.log";
+$tracefile =  $flightdir . "/trace.log";
 
 %pilot_for_user = (
         axel => "Axel",
@@ -142,6 +145,11 @@ if ($action eq "create"){
                 print MYDEBUG  "LogEntry exists ID: " . $result . "\n" if $debug;
         }
         else {
+            cleanupDirForFlight($flight);
+            my $dir = createDirForFlight($flight);
+            my $dest = $dir . "/" . "track.gpx";
+            copy ($gpxName, $dest) || die "can't copy $gpxName to $ dest: $!";
+
             # check if directory 'flights/yearofflight exists
             # create directory flights/yearofflight/flight->id
             # copy gpxFile to flights/aearofFlight/flight->id
@@ -157,6 +165,60 @@ if ($action eq "create"){
     my $jsoutput = $JS->encode(\@jap);
     say "$jsoutput";
     
+}
+
+sub createDirForId {
+    my $year = shift;
+    my $id = shift;
+
+    my $dir = $flightdir . "/" . "$year";
+    if (!(-d "$dir")){
+        mkdir $dir;
+    }
+    $dir = $dir . "/$id";
+    if (!(-d "$dir")){
+        mkdir $dir;
+    }
+    return $dir; 
+}
+
+sub createDirForFlight {
+    my $flight = shift;
+    my $year = $flight->yearOfFlight;
+    my $id = $flight->id;
+    
+    return createDirForId($year, $id);
+}
+
+sub getDirForId {
+    my $year = shift;
+    my $id = shift;
+
+    return "$flightdir" . "/" . "$year" . "/" . "$id";
+}
+
+sub getDirForFlight {
+    my $flight = shift;
+    my $year = $flight->yearOfFlight;
+    my $id = $flight->id;
+
+    return getDirForId( $year, $id);
+}
+
+sub cleanupDirForFlight {
+    my $flight = shift;
+
+    my $dir = getDirForFlight($flight);
+
+    if (-d $dir){
+        say MYDEBUG "Directory $dir exists" if ($debug);
+    }
+
+    rmtree $dir;
+
+    if (!-d $dir){
+        say MYDEBUG "Directory $dir deleted" if ($debug);
+    }
 }
 
 sub joinFlights {
@@ -386,6 +448,8 @@ sub deleteLogEntry {
         }
     }
 
+    cleanupDirForFlight($flight);
+    
     splice (@allflights, $IDX, 1);
     return 1;
 }
@@ -884,6 +948,14 @@ sub dayofFlight {
     $mday = ($mday >= 10 ? $mday : "0" . $mday);
     
     return "$mday" . ":" . $mon . ":" . $year ;
+}
+
+sub yearOfFlight {
+    my $self = shift;
+    my ($sec,$min,$hour,$mday,$mon,$year,$wday,$yday,$isdst) =
+    gmtime($self->{'offBlock'});
+    $mon++; $year += 1900;
+    return $year;
 }
 
 sub departureAirport {
