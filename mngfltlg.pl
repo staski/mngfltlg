@@ -39,7 +39,11 @@ my $sapt;
 
 my $highestid = 0;
 my $highestidx;
+
 my $plane = "DEEBU";
+my $pilot = "CP";
+my $rules = "VFR";
+my $function = "PIC";
 
 $version_major = 0;
 $version_minor = 92;
@@ -57,6 +61,12 @@ $tracefile =  $flightdir . "/trace.log";
         test => "TestPilot",
         testPilot => "TestPilot"
 );
+
+$headerpilot = "";
+$headerplane = "";
+$headerrules = "";
+$headerfunction = "";
+
 
 GetOptions ("debug=s" => \$debug,
             "action=s" => \$caction,
@@ -76,7 +86,6 @@ if ($l_username eq "test"){
     $glogFile = "flights/testint-flightLog.txt";
 }
     
-
 $action = getAction($isCGI);
 say MYDEBUG "ACTION=$action" if $debug;
 
@@ -113,13 +122,22 @@ if ($action  eq "delete" && $request_method eq "POST"){
     print MYDEBUG  "FLIGHTS after $#allflights\n" if $debug;
     writeLog($glogFile);
 }
+
 if ($action eq "create"){
 #    foreach my $key (sort(keys(%ENV))) {
 #        $l_username .= "$key = $ENV{$key} || ";
 #    }
 
     my $l_username = $ENV{'REDIRECT_REMOTE_USER'};
-    $pilot = defined($pilot_for_user{$l_username}) ? $pilot_for_user{$l_username} : "$l_username";
+    $pilot = length ($headerpilot) ? $headerpilot : defined($pilot_for_user{$l_username}) ? $pilot_for_user{$l_username} : "$l_username";
+    $plane = length ($headerplane) ? $headerplane : $plane;
+    $rules = length ($headerrules) ? $headerrules : $rules;
+    $function = length ($headerfunction) ? $headerfunction : $function,
+    
+    say MYDEBUG "using pilot: $pilot ($headerpilot)" if $debug;
+    say MYDEBUG "using plane: $plane ($headerplane)" if $debug;
+    say MYDEBUG "using rules: $rules ($headerrules)" if $debug;
+    say MYDEBUG "using function: $function ($headerfunction)" if $debug;
 
     my $source = readAirportDirectory();
     $sapt = gpxPoint->new($lat{$source},$lon{$source});
@@ -272,6 +290,10 @@ sub initCGI {
         }
 
         if ($action eq "create"){
+            $headerpilot = $cgi_query->param('pilot');
+            $headerplane = $cgi_query->param('plane');
+            $headerrules = $cgi_query->param('rules');
+            $headerfunction = $cgi_query->param('function');
             $gpxName = getGpxName($cgi_query);
             
         }
@@ -320,9 +342,7 @@ sub readLog {
     my $id, $pilot, $plane, $departure, $destination, 
                 $offblock, $takeoff, $arrival, $onblock, $landings,
                 $rules, $function;
-
     open (LOGFILE, "<$logFile") || warn "unable to open logfile: $logFile: $!";
-    
     while (<LOGFILE>){
         if (/FLTLGHDR;(\d+)\.(\d+);(\d+)/){
             $logversion_major = $1;
@@ -500,6 +520,7 @@ sub getGpxName {
     if ($isCGI == 1){
     
         my $lfh  = $query->upload('file');
+        say MYDEBUG "PILOT $headerpilot" if $debug;
         $tmpfile = File::Temp->new();
         $gName = $tmpfile->filename;
         say MYDEBUG  $gName if $debug;
@@ -601,8 +622,8 @@ EVENT:    foreach $event (@takeOff)
             #complete previous segment
             if ($nextTakeoffNewFlight == 1)
             {
-                my $flogEntry = flogEntry->new(-1, $pilot,"DEEBU", $departureAirport,
-                $landingAirport, $offblockTime, $takeoffTime,$landingTime,$timeseconds, "VFR", "PIC", 1);
+                my $flogEntry = flogEntry->new(-1, $pilot,$plane, $departureAirport,
+                $landingAirport, $offblockTime, $takeoffTime,$landingTime,$timeseconds, $rules, $function, 1);
                 
                 $flogEntry->print("FLIGHT") if ($debug);
                 push @newSegments, $flogEntry;
@@ -652,8 +673,8 @@ EVENT:    foreach $event (@takeOff)
             $onblockTime = $timeseconds;
             $previous = "onblock";
             if ($last == 1){
-                my $flogEntry = flogEntry->new(-1, $pilot, "DEEBU", $departureAirport,$landingAirport, 
-                    $offblockTime, $takeoffTime,$landingTime,$onblockTime, "VFR", "PIC", 1);
+                my $flogEntry = flogEntry->new(-1, $pilot, $plane, $departureAirport,$landingAirport,
+                    $offblockTime, $takeoffTime,$landingTime,$onblockTime, $rules, $function, 1);
                 
                 $flogEntry->print("FLIGHT") if ($debug);
                 push @newSegments, $flogEntry;
