@@ -95,6 +95,7 @@ say MYDEBUG  "ACTIONPARAM=$postdata" if $debug;
 
 readLog($glogFile);
 
+$mystart = time;
 
 if ($action eq "read"){
         my $JS = JSON->new->utf8;
@@ -140,7 +141,7 @@ if ($action eq "create"){
     say MYDEBUG "using function: $function ($headerfunction)" if $debug;
 
     my $source = readAirportDirectory();
-    $sapt = gpxPoint->new($lat{$source},$lon{$source});
+    $sapt = gpxPoint->new({lat=>$lat{$source},lon=>$lon{$source}});
 
     #read in the given GPX File
     my @to = readGpxFile($gpxName);
@@ -184,6 +185,9 @@ if ($action eq "create"){
     say "$jsoutput";
     
 }
+
+my $duration = time - $mystart;
+say MYDEBUG "FINISHED after $duration seconds\n" if $debug;
 
 sub createDirForId {
     my $year = shift;
@@ -564,7 +568,7 @@ EVENT:    foreach $event (@takeOff)
         my ($evt,$time,$lat,$lon,$ele,$speed) = split (/;/, $event);
         say MYDEBUG  "EVT: $evt $time $lat $lon $ele $speed ($previous)" if ($debug);
         
-        my $loc = gpxPoint->new($lat,$lon);
+        my $loc = gpxPoint->new({lat=>$lat,lon=>$lon});
         
         #the maximum distance from home airport to look for current airport
         my $dist = ceil($loc->distance($sapt)/1000);
@@ -579,7 +583,7 @@ EVENT:    foreach $event (@takeOff)
 
         say MYDEBUG "$evt on AP $ap" if ($debug);
 
-        my $distance = $loc->distance(gpxPoint->new($lat{$ap},$lon{$ap}));
+        my $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
         #next unless ($distance < 5000);
         if ($distance > 5000){
             $ap = "Unknown";
@@ -708,6 +712,7 @@ sub readGpxFile {
     my $count = 0;
     my $isFlying = 0;
     my $isTaxi = 0;
+    my $i= 0;
     
     foreach my $gpx ($xpc->findnodes('//g:trkpt')) {
         my $lat = $gpx->getAttribute('lat');
@@ -719,6 +724,12 @@ sub readGpxFile {
         $ele = ceil($xpc->findvalue('g:ele') * $feet_for_m);
         $speed = ceil($xpc->findvalue('g:speed') * 3600/1852);
         $time = $xpc->findvalue('g:time');
+        
+        my $trkpts[$i++] = gpxPoint->new({lat=>$lat,
+                                    lon=>$lon,
+                                    ele=>$ele,
+                                    speed=>$speed,
+                            gpxtime=$time});
         
         if ($isTaxi == 0)
         {
@@ -800,7 +811,7 @@ sub findNearestAirport {
     for ($i = $start; $i < $end; $i++){
         my $lat = $lat{$allairports[$i]};
         my $lon = $lon{$allairports[$i]};
-        my $ap = gpxPoint->new($lat, $lon);
+        my $ap = gpxPoint->new({lat=>$lat, lon=>$lon});
         $dist = $target->distance($ap);
         say MYDEBUG "idx $i $dist ($nearest): $allairports[$i]" if ($debug);
         if ($dist < $nearest){
@@ -873,15 +884,17 @@ use 5.10.0;
 our $debug;
 
 sub new {
-    my $class = shift;
-    my ( $lat, $lon ) = @_;
-    my $self = bless {
-        lat => $lat,
-        lon => $lon,
-    }, $class;
-    
-    return $self;
+    my ($class, $args ) = @_;
+    my $self = {
+        lat  => $args->{lat},
+        lon => $args->{lon},
+        ele  => $args->{ele} || 0,
+        speed => $args->{speed} || 0,
+        gpxtime => $args->{gpxtime} || "",
+       };
+       return bless $self, $class;
 }
+
 
 sub print {
     my $self = shift;
