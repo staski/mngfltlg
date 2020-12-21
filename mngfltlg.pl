@@ -67,6 +67,8 @@ $headerplane = "";
 $headerrules = "";
 $headerfunction = "";
 
+@trkpts = [];
+$trkptcnt = 0;
 
 GetOptions ("debug=s" => \$debug,
             "action=s" => \$caction,
@@ -570,16 +572,7 @@ EVENT:    foreach $event (@takeOff)
         
         my $loc = gpxPoint->new({lat=>$lat,lon=>$lon});
         
-        #the maximum distance from home airport to look for current airport
-        my $dist = ceil($loc->distance($sapt)/1000);
-        
-        say MYDEBUG "FIND NEAREST HINT: $dist" if ($debug);
-        
-        my $oldDebug = $debug;
-        $debug = 0;
-        
-        my $ap = findNearestAirport($loc, $dist);
-        $debug = $oldDebug;
+        my $ap = findNearestAirport($loc);
 
         say MYDEBUG "$evt on AP $ap" if ($debug);
 
@@ -698,6 +691,8 @@ EVENT:    foreach $event (@takeOff)
 
 
 sub readGpxFile {
+    my $likelytakeoffspeed = 50;
+    my $likelylandingspeed = 70;
     my $takeoffSpeed = 61;
     my $landingSpeed = 60;
     my $taxiSpeed = 5;
@@ -714,27 +709,78 @@ sub readGpxFile {
     my $isTaxi = 0;
     my $i= 0;
     
-    foreach my $gpx ($xpc->findnodes('//g:trkpt')) {
+    use constant {
+        AT_REST => 0,
+        TAXI => 1,
+        LIKELY_FLYING => 2,
+        FLYING => 3,
+        LIKELY_TAXI => 4,
+    };
+    
+    my $state = REST;
+    
+    @trkpts = [];
+    $trkptcnt = 0;
+    
+    $lastlat = 0;
+    $lastlon = 0;
+    $lastele = 0;
+    $lastspeed = 0;
+    $lasttime = 0;
+    
+    $lastheading = 0;
+    $lastfpm = 0;
+    
+    #read GPX-File
+    my @allnodes = $xpc->findnodes('//g:trkpt');
+
+    #create Pivot-Element (index 0)
+    my $gpx = shift @allnodes;
+    my $lat = $gpx->getAttribute('lat');
+    my $lon = $gpx->getAttribute('lon');
+    
+    
+    my $ele = ceil($xpc->findvalue('g:ele', $gpx) * $feet_for_m);
+    my $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
+    my $time = $xpc->findvalue('g:time', $gpx);
+    
+    my $loc = $trkpts[$i] = gpxPoint->new({lat=>$lat,
+                                lon=>$lon,
+                                ele=>$ele,
+                                speed=>$speed,
+                                gpxtime=>$time});
+    $i++;
+
+    my $ap = findNearestAirport($loc);
+
+    say MYDEBUG "START on AP $ap (DIST = $dist)" if ($debug);
+
+    my $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
+    #next unless ($distance < 5000);
+    if ($distance > 5000){
+        $ap = "Unknown";
+    }
+
+    foreach $gpx (@allnodes) {
         my $lat = $gpx->getAttribute('lat');
         my $lon = $gpx->getAttribute('lon');
+                
+        $ele = ceil($xpc->findvalue('g:ele', $gpx) * $feet_for_m);
+        $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
+        $time = $xpc->findvalue('g:time', $gpx);
         
-        $xpc->setContextNode($gpx);
-        $xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
-        
-        $ele = ceil($xpc->findvalue('g:ele') * $feet_for_m);
-        $speed = ceil($xpc->findvalue('g:speed') * 3600/1852);
-        $time = $xpc->findvalue('g:time');
-        
-        my $trkpts[$i++] = gpxPoint->new({lat=>$lat,
+        $trkpts[$i] = gpxPoint->new({lat=>$lat,
                                     lon=>$lon,
                                     ele=>$ele,
                                     speed=>$speed,
-                            gpxtime=$time});
+                                    gpxtime=>$time});
+        $i++;
         
-        if ($isTaxi == 0)
+        if ($state == AT_REST)
         {
             if ($speed > $taxiSpeed)
             {
+                $state = TAXI;
                 $isTaxi = 1;
                 $isStart = 0;
 
@@ -744,9 +790,10 @@ sub readGpxFile {
 
             }
         }
-        
-        if ($isTaxi == 1){
+        elsif ($state == TAXI)
+        {
             if ($speed > $takeoffSpeed){
+                $state = FLYING;
                 $isTaxi = 2;
                 $isFlying = 1;
 
@@ -757,6 +804,7 @@ sub readGpxFile {
             
             if ($speed < $taxiSpeed)
             {
+                $state = AT_REST;
                 $isTaxi = 0;
                 
                 $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
@@ -764,11 +812,11 @@ sub readGpxFile {
                 $count++;
             }
         }
-        
-        if ($isFlying == 1)
+        elsif ($state == FLYING)
         {
             if ($speed < $landingSpeed)
             {
+                $state = TAXI;
                 $isFlying = 0;
                 $isTaxi = 1;
                 
@@ -781,24 +829,25 @@ sub readGpxFile {
         
         
     }
-    if ($isTaxi == 1){
+    if ($state == TAXI)
+    {
         $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
         $count++;
     }
     return @fa;
 }
 
-
+#find the airtport closest to point target,
 sub findNearestAirport {
     my $target = shift;
-    my $hint = shift;
     my $i; $start;
     my $nearest = 100000000;
-    my $dist;
     my $nix = 0;
     
-    for ($i = 0; $i < $#distances && ($hint > $distances[$i]); $i++){
-        say MYDEBUG "IDX $i DISTANCE $distances[$i]" if ($debug);
+    #distance to home airport ($apt) serves as a hint indes into airport directory
+    my $dist = ceil($target->distance($sapt)/1000);
+    for ($i = 0; $i < $#distances && ($dist > $distances[$i]); $i++){
+        #say MYDEBUG "IDX $i DISTANCE $distances[$i]" if ($debug);
     }
     
     $start = 0;
@@ -813,13 +862,13 @@ sub findNearestAirport {
         my $lon = $lon{$allairports[$i]};
         my $ap = gpxPoint->new({lat=>$lat, lon=>$lon});
         $dist = $target->distance($ap);
-        say MYDEBUG "idx $i $dist ($nearest): $allairports[$i]" if ($debug);
+        #say MYDEBUG "idx $i $dist ($nearest): $allairports[$i]" if ($debug);
         if ($dist < $nearest){
             $nix = $i;
             $nearest = $dist;
-            say MYDEBUG "NEAREST $nix $dist" if ($debug);
+            #say MYDEBUG "NEAREST $nix $dist" if ($debug);
             if ($dist < 2000) {
-                say MYDEBUG "PERFECT match -> break LOOP" if ($debug);
+                #say MYDEBUG "PERFECT match -> break LOOP" if ($debug);
                 last;
             }
         }
@@ -881,7 +930,7 @@ sub readAirportDirectory {
 # the class representing a point on earth
 package gpxPoint;
 use 5.10.0;
-our $debug;
+#our $debug;
 
 sub new {
     my ($class, $args ) = @_;
@@ -891,10 +940,19 @@ sub new {
         ele  => $args->{ele} || 0,
         speed => $args->{speed} || 0,
         gpxtime => $args->{gpxtime} || "",
+        track => 0,
+        fpm => 0,
        };
        return bless $self, $class;
 }
 
+sub setTrackFpm {
+    my $self = shift;
+    my $track = shift;
+    my $fpm = shift;
+    $self->{'track'} = $track;
+    $self->{'fpm'} = $fpm;
+}
 
 sub print {
     my $self = shift;
@@ -904,15 +962,42 @@ sub print {
 
 sub lon {
     my $self = shift;
-    return $self->{lon};
+    return $self->{'lon'};
 }
 
 sub lat {
     my $self = shift;
-    return $self->{lat};
+    return $self->{'lat'};
+}
+
+sub ele {
+    my $self = shift;
+    return $self->{'ele'};
+}
+
+sub speed {
+    my $self = shift;
+    return $self->{'speed'};
+}
+
+sub gpxtime {
+    my $self = shift;
+    return $self->{'gpxtime'};
+}
+
+sub track {
+    my $self = shift;
+    return $self->{'track'};
+}
+
+sub fpm {
+    my $self = shift;
+    return $self->{'fpm'};
 }
 
 
+
+#returns the distance between two points in meters
 sub distance {
     my $self = shift;
     my $other = shift;
@@ -932,6 +1017,26 @@ sub distance {
     say MYDEBUG "DISTANCE $distance" if ($debug);
     
     return $distance;
+}
+
+sub bearing {
+    my $self = shift;
+    my $other = shift;
+    
+    
+    $self->print("SELF") if ($debug);
+    $other->print("OTHER") if ($debug);
+    
+    my $lon2 = Math::Trig::deg2rad($other->lon);
+    my $lon1 = Math::Trig::deg2rad($self->lon);
+    my $lat2 = Math::Trig::deg2rad(90 - $other->lat);
+    my $lat1 = Math::Trig::deg2rad(90 - $self->lat);
+    
+    my $bearing = Math::Trig::rad2deg(Math::Trig::great_circle_bearing($lon1,$lat1,$lon2,$lat2));
+    
+    say MYDEBUG "BEARING $bearing" if ($debug);
+    
+    return $bearing;
 }
 
 # the class representing a single flight in a flight log
