@@ -693,7 +693,7 @@ EVENT:    foreach $event (@takeOff)
 sub readGpxFile {
     my $likelytakeoffspeed = 50;
     my $likelylandingspeed = 70;
-    my $takeoffSpeed = 61;
+    my $takeoffSpeed = 70;
     my $landingSpeed = 60;
     my $taxiSpeed = 5;
     my $feet_for_m = 3.28084;
@@ -705,8 +705,6 @@ sub readGpxFile {
     $xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
 
     my $count = 0;
-    my $isFlying = 0;
-    my $isTaxi = 0;
     my $i= 0;
     
     use constant {
@@ -717,7 +715,7 @@ sub readGpxFile {
         LIKELY_TAXI => 4,
     };
     
-    my $state = REST;
+    my $state = AT_REST;
     
     @trkpts = [];
     $trkptcnt = 0;
@@ -752,15 +750,21 @@ sub readGpxFile {
     $i++;
 
     my $ap = findNearestAirport($loc);
-
-    say MYDEBUG "START on AP $ap (DIST = $dist)" if ($debug);
-
-    my $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
+    my $distance, $alt_ft;
+    
     #next unless ($distance < 5000);
     if ($distance > 5000){
+        $state = FLYING;
         $ap = "Unknown";
     }
+    else
+    {
+        $alt_ft = $alt_ft{$ap};
+        $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
+        say MYDEBUG "START on AP $ap (DIST = $distance, ALT = $alt_ft)" if ($debug);
 
+    }
+    
     foreach $gpx (@allnodes) {
         my $lat = $gpx->getAttribute('lat');
         my $lon = $gpx->getAttribute('lon');
@@ -769,7 +773,7 @@ sub readGpxFile {
         $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
         $time = $xpc->findvalue('g:time', $gpx);
         
-        $trkpts[$i] = gpxPoint->new({lat=>$lat,
+        $loc = $trkpts[$i] = gpxPoint->new({lat=>$lat,
                                     lon=>$lon,
                                     ele=>$ele,
                                     speed=>$speed,
@@ -781,8 +785,6 @@ sub readGpxFile {
             if ($speed > $taxiSpeed)
             {
                 $state = TAXI;
-                $isTaxi = 1;
-                $isStart = 0;
 
                 $fa[$count] = "offblock;$time;$lat;$lon;$ele;$speed";
                 say MYDEBUG  $fa[$count] if ($debug);
@@ -794,32 +796,62 @@ sub readGpxFile {
         {
             if ($speed > $takeoffSpeed){
                 $state = FLYING;
-                $isTaxi = 2;
-                $isFlying = 1;
 
                 $fa[$count] = "takeoff;$time;$lat;$lon;$ele;$speed";
                 say MYDEBUG  $fa[$count] if ($debug);
                 $count++;
             }
+            elsif ($speed > $likelytakeoffspeed)
+            {
+                    $state = LIKELY_FLYING;
+            }
             
             if ($speed < $taxiSpeed)
             {
                 $state = AT_REST;
-                $isTaxi = 0;
                 
                 $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
                 say MYDEBUG  $fa[$count] if ($debug);
                 $count++;
             }
         }
+        elsif ($state == LIKELY_FLYING)
+        {
+            
+            if ($speed > $takeoffSpeed || ($ele - $alt_ft) > 50){
+                $state = FLYING;
+                
+                if ($debug){
+                    if ($speed > $takeoffSpeed){
+                        $reason = " reached takeoff speed ($speed kts > $takeoffSpeed kts) ELE: $ele (AP: $alt_ft)";
+                    }
+                    else
+                    {
+                        $reason = " positive climb ($speed kts > $takeoffSpeed kts) ELE: $ele (AP: $alt_ft)";
+                    }
+                }
+                $ap = findNearestAirportWithHint($loc, gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
+                $alt_ft = $alt_ft{$ap};
+                
+                $fa[$count] = "takeoff;$time;$lat;$lon;$ele;$speed";
+                say MYDEBUG  $fa[$count] . "$reason" if ($debug);
+                $count++;
+            }
+            elsif ($speed < $landingSpeed)
+            {
+                $state = TAXI;
+            }
+            
+        }
         elsif ($state == FLYING)
         {
             if ($speed < $landingSpeed)
             {
                 $state = TAXI;
-                $isFlying = 0;
-                $isTaxi = 1;
-                
+
+                $ap = findNearestAirportWithHint($loc, gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
+                $alt_ft = $alt_ft{$ap};
+
                 $fa[$count] = "landing;$time;$lat;$lon;$ele;$speed";
                 say MYDEBUG  $fa[$count] if ($debug);
                 $count++;
@@ -836,6 +868,20 @@ sub readGpxFile {
     }
     return @fa;
 }
+
+sub findNearestAirportWithHint {
+    my $target = shift;
+    my $hint = shift;
+    my $dist = $target->distance($hint);
+    
+    if ($dist < 5000)
+    {
+        return $hint;
+    }
+    
+    return findNearestAirport($target);
+}
+
 
 #find the airtport closest to point target,
 sub findNearestAirport {
