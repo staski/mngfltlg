@@ -252,8 +252,8 @@ sub joinFlights {
     push @jap, $prev;
     for (my $i = 1; $i <= $#af; $i++) {
         my $this = $af[$i];
-        $prev->print("PREV") if ($debug);
-        $this->print("THIS") if ($debug);
+        $prev->print("PREV: ") if ($debug);
+        $this->print("THIS: ") if ($debug);
         if ($prev->landingAirport eq $this->departureAirport &&
             $this->landingAirport eq $this->departureAirport && ($this->takeoffTime_seconds - $prev->landingTime_seconds < 60)){
                 say MYDEBUG  "HIT" if ($debug);
@@ -503,7 +503,7 @@ sub validateFlight {
         $l_lt_s = $allflights[$i]->onBlock_seconds;
           if ($takeoff_s >= $l_tot_s && $takeoff_s < $l_lt_s){
                 my $lid = $allflights[$i]->id;
-                say MYDEBUG  "conflicting flight $lid $takeoff_s $l_tot_s $l_lt_s\n" if $debug;
+                say MYDEBUG  "conflicting flight $lid $l_tot_s <= $takeoff_s < $l_lt_s\n" if $debug;
 
                 if ($takeoff_s == $l_tot_s) {
                     $flight->setId($lid);
@@ -555,6 +555,7 @@ sub createFlights {
     my $skipnext = 0;
     my $count = 0;
     my $last = 0;
+    my $first = 1;
     my $previous = "";
     my $nextTakeoffNewFlight = 0;
     
@@ -562,7 +563,10 @@ EVENT:    foreach $event (@takeOff)
     {
         if ($count == $#takeOff){
             $last = 1;
-        } 
+        }
+        elsif ($count > 0){
+            $first = 0;
+        }
         
         $count++;
         
@@ -582,8 +586,9 @@ EVENT:    foreach $event (@takeOff)
             $ap = "Unknown";
         }
         
-        my $timeseconds = str2time($time);
-        
+#        my $timeseconds = str2time($time);
+        my $timeseconds = $time;
+
         
         if ($evt eq "offblock"){
             if ($previous eq ""){
@@ -631,10 +636,14 @@ EVENT:    foreach $event (@takeOff)
                 $nextTakeoffNewFlight = 0;
                 #print "$dayofFlight | $pilot | $departureAirport | $landingAirport | $takeoffTime | $landingTime | $flightDurationMinutes ($flightHours:$flightMinutes)\n";
             }
-            elsif ($previous eq "offblock")
+            elsif ($previous eq "offblock" || $first == 1)
             {
                 $isFlying = 1;
                 $takeoffTime = $timeseconds;
+                if ($first == 1){
+                    $offblockTime = $timeseconds;
+                }
+                $first = 0;
                 $departureAirport = $ap;
             }
             else
@@ -740,7 +749,7 @@ sub readGpxFile {
     
     my $ele = ceil($xpc->findvalue('g:ele', $gpx) * $feet_for_m);
     my $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
-    my $time = $xpc->findvalue('g:time', $gpx);
+    my $time = str2time($xpc->findvalue('g:time', $gpx));
     
     my $loc = $trkpts[$i] = gpxPoint->new({lat=>$lat,
                                 lon=>$lon,
@@ -750,34 +759,60 @@ sub readGpxFile {
     $i++;
 
     my $ap = findNearestAirport($loc);
-    my $distance, $alt_ft;
-    
-    #next unless ($distance < 5000);
+    my $alt_ft, $distance;
+    $alt_ft = $alt_ft{$ap};
+    $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
+
     if ($distance > 5000){
+
+        $fa[$count] = "takeoff;$time;$lat;$lon;$ele;$speed";
+        say MYDEBUG  $fa[$count] if ($debug);
+        $count++;
+
         $state = FLYING;
         $ap = "Unknown";
+        say MYDEBUG "Log starts in flight $distance km from $ap, ALT = $ele, SPEED = $speed)" if ($debug);
+
     }
     else
     {
-        $alt_ft = $alt_ft{$ap};
-        $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
         say MYDEBUG "START on AP $ap (DIST = $distance, ALT = $alt_ft)" if ($debug);
-
     }
     
+    $distance = 0;
+    
+GPXPOINT:
     foreach $gpx (@allnodes) {
         my $lat = $gpx->getAttribute('lat');
         my $lon = $gpx->getAttribute('lon');
                 
         $ele = ceil($xpc->findvalue('g:ele', $gpx) * $feet_for_m);
         $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
-        $time = $xpc->findvalue('g:time', $gpx);
+        $time = str2time($xpc->findvalue('g:time', $gpx));
         
-        $loc = $trkpts[$i] = gpxPoint->new({lat=>$lat,
+        my $prev = $loc;
+        $loc = gpxPoint->new({lat=>$lat,
                                     lon=>$lon,
                                     ele=>$ele,
                                     speed=>$speed,
                                     gpxtime=>$time});
+        
+        $distance += $loc->distance($prev);
+        $track = $prev->bearing($loc);
+        $fpm = $loc->ele() - $prev->ele();
+        $timediff = $loc->{gpxtime} - $prev->{gpxtime};
+        
+        if ($timediff == 0){
+            say MYDEBUG "SKIP" if ($debug);
+            $loc = $prev;
+            next GPXPOINT;
+        }
+        
+        $loc->setTrackFpmDistance($track, $fpm, $distance, $timediff);
+        
+        say MYDEBUG "DIST $distance, TRACK $track, FPM $fpm, TIMEDIFF $timediff" if ($debug);
+        
+        $trkpts[$i] = $loc;
         $i++;
         
         if ($state == AT_REST)
@@ -988,16 +1023,22 @@ sub new {
         gpxtime => $args->{gpxtime} || "",
         track => 0,
         fpm => 0,
+        timediff => 0,
        };
        return bless $self, $class;
 }
 
-sub setTrackFpm {
+sub setTrackFpmDistance {
     my $self = shift;
     my $track = shift;
     my $fpm = shift;
+    my $distance = shift;
+    my $timediff = shift;
+    
     $self->{'track'} = $track;
     $self->{'fpm'} = $fpm;
+    $self->{'distance'} = $distance;
+    $self->{'timediff'} = $timediff;
 }
 
 sub print {
@@ -1039,6 +1080,11 @@ sub track {
 sub fpm {
     my $self = shift;
     return $self->{'fpm'};
+}
+
+sub trackDistance {
+    my $self = shift;
+    return $self->{'distance'};
 }
 
 
@@ -1083,6 +1129,14 @@ sub bearing {
     say MYDEBUG "BEARING $bearing" if ($debug);
     
     return $bearing;
+}
+
+sub timediff {
+    my $self = shift;
+    my $other = shift;
+    
+    $self->gpxtime - $other->gpxtime;
+    
 }
 
 # the class representing a single flight in a flight log
