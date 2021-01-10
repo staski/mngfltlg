@@ -664,6 +664,7 @@ EVENT:    foreach $event (@takeOff)
             
             $apelevation = $alt_ft{$ap};
             if ($ele > $apelevation + 100){
+                say MYDEBUG "not landing on $ap. Reason: too high ($ele > $apelevation + 100)" if $debug;
                 $skipnext = 1;
                 next EVENT;
             }
@@ -729,14 +730,15 @@ sub readGpxFile {
     @trkpts = [];
     $trkptcnt = 0;
     
-    $lastlat = 0;
-    $lastlon = 0;
-    $lastele = 0;
-    $lastspeed = 0;
-    $lasttime = 0;
+    my @fpm = [];
+    my @speed_avg = [];
+    my @alt_avg = [];
     
-    $lastheading = 0;
-    $lastfpm = 0;
+    my $avg_cnt = 0;
+    my $elapsed = 0;
+    my $elapsed_minutes = 0;
+    
+    $lastele = 0;
     
     #read GPX-File
     my @allnodes = $xpc->findnodes('//g:trkpt');
@@ -751,6 +753,8 @@ sub readGpxFile {
     my $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
     my $time = str2time($xpc->findvalue('g:time', $gpx));
     
+    my $starttime = $time;
+    
     my $loc = $trkpts[$i] = gpxPoint->new({lat=>$lat,
                                 lon=>$lon,
                                 ele=>$ele,
@@ -760,6 +764,7 @@ sub readGpxFile {
 
     my $ap = findNearestAirport($loc);
     my $alt_ft, $distance;
+
     $alt_ft = $alt_ft{$ap};
     $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
 
@@ -778,8 +783,12 @@ sub readGpxFile {
     {
         say MYDEBUG "START on AP $ap (DIST = $distance, ALT = $alt_ft)" if ($debug);
     }
-    
+
+    $speed_avg[$elapsed_minutes] = $speed;
+    $alt_avg[$elapsed_minutes] = $ele;
+
     $distance = 0;
+    $lastele = $ele;
     
 GPXPOINT:
     foreach $gpx (@allnodes) {
@@ -791,15 +800,24 @@ GPXPOINT:
         $time = str2time($xpc->findvalue('g:time', $gpx));
         
         my $prev = $loc;
+
+        #adapt general statistics
+        if ($speed > $speed_max)
+        {
+            $speed_max = $speed;
+        }
+        
+        if ($ele > $alt_max)
+        {
+            $alt_max = $ele;
+        }
+        
         $loc = gpxPoint->new({lat=>$lat,
                                     lon=>$lon,
                                     ele=>$ele,
                                     speed=>$speed,
                                     gpxtime=>$time});
         
-        $distance += $loc->distance($prev);
-        $track = $prev->bearing($loc);
-        $fpm = $loc->ele() - $prev->ele();
         $timediff = $loc->{gpxtime} - $prev->{gpxtime};
         
         if ($timediff == 0){
@@ -808,9 +826,62 @@ GPXPOINT:
             next GPXPOINT;
         }
         
-        $loc->setTrackFpmDistance($track, $fpm, $distance, $timediff);
+        $elapsed += $timediff;
         
-        say MYDEBUG "DIST $distance, TRACK $track, FPM $fpm, TIMEDIFF $timediff" if ($debug);
+        $distance += $loc->distance($prev);
+        $track = $prev->bearing($loc);
+        $fpm = ($loc->ele() - $prev->ele()) * 60 / $timediff;
+
+        $speed_avg[$elapsed_minutes] += $speed;
+        $alt_avg[$elapsed_minutes] += $ele;
+        $avg_cnt++;
+        
+        #todo: what happens if we have gaps in the track with more than 120 minutes difference?
+        if ($elapsed > 30){
+            my $alt_diff = $loc->ele() - $lastele;
+            $fpm[$elapsed_minutes] = $alt_diff * 60 / $elapsed;
+            $speed_avg[$elapsed_minutes] /= $avg_cnt;
+            $alt_avg[$elapsed_minutes] /= $avg_cnt;
+
+            my $fpm = $fpm[$elapsed_minutes];
+            if ($fpm < -200)
+            {
+                    $descend_minutes++;
+                    $total_descend += $alt_diff;
+            }
+            elsif ($fpm > 200)
+            {
+                    $climb_minutes++;
+                    $total_climb += $alt_diff;
+            }
+            else
+            {
+                $straightlevel_minutes++;
+            }
+            
+            my $text = "MINUTES (count = " . $avg_cnt . "): " . $elapsed_minutes . ", FPM: " . $fpm[$elapsed_minutes] . ", SPEED AVG: " .
+                $speed_avg[$elapsed_minutes] . ", ALT AVG: " . $alt_avg[$elapsed_minutes];
+            say MYDEBUG $text if $debug;
+
+            $lastele = $ele;
+            $elapsed_minutes++;
+            $elapsed -= 30;
+            $avg_cnt = 0;
+            
+            #todo: that's not quite right -- all climb is associated to the first timeslot
+            while ($elapsed > 30) {
+                $fpm[$elapsed_minutes] = 0;
+                $speed_avg[$elapsed_minutes] = $speed_avg[$elapsed_minutes - 1];
+                $alt_avg[$elapsed_minutes] = $alt_avg[$elapsed_minutes - 1];
+                $elapsed_minutes++;
+                $elapsed -= 30;
+            }
+        }
+        
+        $loc->setTrackFpmDistance($track, $fpm, $distance, $elapsed);
+        
+#        say MYDEBUG "DIST $distance, TRACK $track, FPM $fpm, TIMEDIFF $timediff" if ($debug);
+        $loc->printdebug("NEW POINT") if $debug;
         
         $trkpts[$i] = $loc;
         $i++;
@@ -896,11 +967,23 @@ GPXPOINT:
         
         
     }
+    
     if ($state == TAXI)
     {
         $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
         $count++;
     }
+
+    $minutes = $elapsed_minutes / 2;
+    $climb_minutes /= 2;
+    $straightlevel_minutes /= 2;
+    $descend_minutes /= 2;
+    $distance /= 1000;
+    
+    $flightstats = "total time: $minutes minutes, distance: $distance km, climb: $climb_minutes minutes ($total_climb ft), " .
+        "straight level flight: $straightlevel_minutes, descend: $descend_minutes minutes ($total_descend feet)";
+    
+    say MYDEBUG $flightstats if $debug;
     return @fa;
 }
 
@@ -1041,6 +1124,14 @@ sub setTrackFpmDistance {
     $self->{'timediff'} = $timediff;
 }
 
+sub printdebug {
+    my $self = shift;
+    my $text = shift;
+    
+    my $outp = "($text) TIME: " . $self->gpxtime() . ", LAT: " . $self->{'lat'} . ", LON: " . $self->{'lon'} . ", ALT: " . $self->{'ele'} . ", SPEED: " . $self->speed() . ", TRACK: " . $self->track() . ", FPM: " . $self->fpm() . ", TOTAL: " . $self->trackDistance();
+    
+    say main::MYDEBUG $outp;
+}
 sub print {
     my $self = shift;
     my $text = shift;
