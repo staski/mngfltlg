@@ -10,6 +10,7 @@ use Getopt::Long;
 use Date::Parse;
 
 use Math::Trig;
+use Math::Round;
 use POSIX;# for floor etc.
 use File::Temp;
 use File::Copy;
@@ -53,6 +54,11 @@ $version_minor = 92;
 $loghighestid = 0;
 $debug_var;
 $tracefile =  $flightdir . "/trace.log";
+
+use constant {
+    FEET_FOR_M => 3.28084,
+    KM_FOR_NM => 1.852,
+};
 
 %pilot_for_user = (
         axel => "Axel",
@@ -146,13 +152,18 @@ if ($action eq "create"){
     $sapt = gpxPoint->new({lat=>$lat{$source},lon=>$lon{$source}});
 
     #read in the given GPX File
-    my @to = readGpxFile($gpxName);
-    if ($#to < 0){
-        die "not a valid flight found in $gpxName";
-    }
+    #my @to = readGpxFile($gpxName);
+    #if ($#to < 0){
+    #    die "not a valid flight found in $gpxName";
+    #}
 
     #create flight log entries from the parsed result. One entry for each pair takeoff - landing
-    my @flightSegments = createFlights(@to);
+    #my @flightSegments = createFlights(@to);
+
+    my @flightSegments = readGpxFile($gpxName);
+    if ($#flightSegments < 0){
+        die "not a valid flight found in $gpxName";
+    }
 
     # join those entries where the takeoff is from the same AP as the landing of the previous and this
     # one
@@ -441,6 +452,7 @@ sub addLogEntry {
 sub updateLogEntry {
     my $flight = shift;
     my $result = validateFlight($flight);
+    my $IDX = -1;
     
     if ($result == 0){
         print MYDEBUG  "invalid flight: " . $flight->print() if $debug;
@@ -454,13 +466,22 @@ sub updateLogEntry {
         }
     }
 
-    splice (@allflights, $IDX, 1, $flight);
+    if ($IDX >= 0){
+        splice (@allflights, $IDX, 1, $flight);
+        return 1;
+    }
+    else
+    {
+        say MYDEBUG "no valid flight found with ID: " .  "$flight->id()";
+        return 0;
+    }
     return 1;
 }
 
 sub deleteLogEntry {
     my $flight = shift;
     my $result = validateFlight($flight);
+    my $IDX = -1;
     
     if ($result == 0){
         print MYDEBUG  "invalid flight: " . $flight->print() if $debug;
@@ -468,16 +489,24 @@ sub deleteLogEntry {
     }
 
     for (my $i = $#allflights; $i >= 0; $i--){
-        if ($flight->id == $allflights[$i]->id){
+        if ($flight->id == $allflights[$i]->id)
+        {
+            $allflights[$i]->print("MATCH ") if $debug;
             $IDX = $i;
             $i = -1;
         }
     }
 
-    cleanupDirForFlight($flight);
-    
-    splice (@allflights, $IDX, 1);
-    return 1;
+    if ($IDX >= 0){
+        cleanupDirForFlight($flight);
+        splice (@allflights, $IDX, 1);
+        return 1;
+    }
+    else
+    {
+        say MYDEBUG "no valid flight found with ID: " .  "$flight->id()";
+        return 0;
+    }
 }
 
 #check a given flight if it already exists
@@ -702,20 +731,21 @@ EVENT:    foreach $event (@takeOff)
 
 sub readGpxFile {
     my $likelytakeoffspeed = 50;
-    my $likelylandingspeed = 70;
     my $takeoffSpeed = 70;
     my $landingSpeed = 60;
     my $taxiSpeed = 5;
     my $feet_for_m = 3.28084;
 
     my $fname = shift;
-    my @fa;
+    my @fa; my @newSegments;
     my $tmpFile = XML::LibXML->load_xml(location => $fname);
     my $xpc = XML::LibXML::XPathContext->new($tmpFile);
     $xpc->registerNs('g', 'http://www.topografix.com/GPX/1/1');
 
     my $count = 0;
     my $i= 0;
+    
+    my $offblock_i = -1, $takeoff_i = -1, $landing_i = -1, $onblock_i = -1;
     
     use constant {
         AT_REST => 0,
@@ -749,8 +779,8 @@ sub readGpxFile {
     my $lon = $gpx->getAttribute('lon');
     
     
-    my $ele = ceil($xpc->findvalue('g:ele', $gpx) * $feet_for_m);
-    my $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
+    my $ele = ceil($xpc->findvalue('g:ele', $gpx) * FEET_FOR_M);
+    my $speed = ceil($xpc->findvalue('g:speed', $gpx) * (3.6/KM_FOR_NM));
     my $time = str2time($xpc->findvalue('g:time', $gpx));
     
     my $starttime = $time;
@@ -764,6 +794,7 @@ sub readGpxFile {
 
     my $ap = findNearestAirport($loc);
     my $alt_ft, $distance;
+    my $flight, $nextFlight;
 
     $alt_ft = $alt_ft{$ap};
     $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
@@ -775,13 +806,19 @@ sub readGpxFile {
         $count++;
 
         $state = FLYING;
+        $distance = round($distance /(1000 * KM_FOR_NM));
+        say MYDEBUG "Log starts in flight $distance NMs from $ap, ALT = $ele, SPEED = $speed)" if ($debug);
+
         $ap = "Unknown";
-        say MYDEBUG "Log starts in flight $distance km from $ap, ALT = $ele, SPEED = $speed)" if ($debug);
+        $flight = flogEntry->new(-1, $pilot, $plane, $ap ,"",
+                                    $time, $time, 0,0, $rules, $function, 1);
 
     }
     else
     {
         say MYDEBUG "START on AP $ap (DIST = $distance, ALT = $alt_ft)" if ($debug);
+        $flight = flogEntry->new(-1, $pilot, $plane, $ap ,"",
+                                    0, 0, 0,0, $rules, $function, 1);
     }
 
     $speed_avg[$elapsed_minutes] = $speed;
@@ -789,6 +826,8 @@ sub readGpxFile {
 
     $distance = 0;
     $lastele = $ele;
+    
+    
     
 GPXPOINT:
     foreach $gpx (@allnodes) {
@@ -836,7 +875,6 @@ GPXPOINT:
         $alt_avg[$elapsed_minutes] += $ele;
         $avg_cnt++;
         
-        #todo: what happens if we have gaps in the track with more than 120 minutes difference?
         if ($elapsed > 30){
             my $alt_diff = $loc->ele() - $lastele;
             $fpm[$elapsed_minutes] = $alt_diff * 60 / $elapsed;
@@ -878,13 +916,10 @@ GPXPOINT:
             }
         }
         
+        #todo: $elapsed is wrong here ...
         $loc->setTrackFpmDistance($track, $fpm, $distance, $elapsed);
         
-#        say MYDEBUG "DIST $distance, TRACK $track, FPM $fpm, TIMEDIFF $timediff" if ($debug);
-        $loc->printdebug("NEW POINT") if $debug;
-        
         $trkpts[$i] = $loc;
-        $i++;
         
         if ($state == AT_REST)
         {
@@ -893,6 +928,16 @@ GPXPOINT:
                 $state = TAXI;
 
                 $fa[$count] = "offblock;$time;$lat;$lon;$ele;$speed";
+                if ($flight->offBlock_seconds == 0)
+                {
+                    $flight->setOffBlockTime($time);
+                }
+                else
+                {
+                    #if we do a landing, then taxi, then takeoff again, the first flight has onblock time equeal to
+                    #takeoff time of the second flight, and equal to offblocktime of that flight
+                }
+                $flight->print("EVENT: AT_REST->TAXI ");
                 say MYDEBUG  $fa[$count] if ($debug);
                 $count++;
 
@@ -905,7 +950,28 @@ GPXPOINT:
 
                 $fa[$count] = "takeoff;$time;$lat;$lon;$ele;$speed";
                 say MYDEBUG  $fa[$count] if ($debug);
+                
+                if ($flight->landingTime_seconds() != 0)
+                {
+                    if (!defined($nextFlight))
+                    {
+                        $nextFlight = flogEntry->new(-1, $pilot, $plane, $ap ,"",
+                            $time, $time, 0,0, $rules, $function, 1);
+                        $flight->setOnBlockTime($time);
+                    }
+                    push @newSegments, $flight;
+                    $flight = $nextFlight;
+                    undef $nextFlight;
+                }
+                else
+                {
+                        $flight->setTakeoffTime($time);
+                }
+
                 $count++;
+                
+                $flight->print("EVENT: TAXI->TAKEOFF ");
+
             }
             elsif ($speed > $likelytakeoffspeed)
             {
@@ -917,13 +983,18 @@ GPXPOINT:
                 $state = AT_REST;
                 
                 $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
+                $flight->setOnBlockTime($time);
+
+                $flight->print("EVENT: TAXI->AT_REST  ");
+
                 say MYDEBUG  $fa[$count] if ($debug);
                 $count++;
             }
         }
         elsif ($state == LIKELY_FLYING)
         {
-            
+            $ap = findNearestAirportWithHint($loc, $ap);
+            $alt_ft = $alt_ft{$ap};
             if ($speed > $takeoffSpeed || ($ele - $alt_ft) > 50){
                 $state = FLYING;
                 
@@ -936,9 +1007,24 @@ GPXPOINT:
                         $reason = " positive climb ($speed kts > $takeoffSpeed kts) ELE: $ele (AP: $alt_ft)";
                     }
                 }
-                $ap = findNearestAirportWithHint($loc, gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
-                $alt_ft = $alt_ft{$ap};
-                
+
+                if ($flight->landingTime_seconds() != 0)
+                {
+                    if (!defined($nextFlight))
+                    {
+                        $nextFlight = flogEntry->new(-1, $pilot, $plane, $ap ,"", $time, $time, 0,0, $rules, $function, 1);
+                        $flight->setOnBlockTime($time);
+                    }
+                    push @newSegments, $flight;
+                    $flight = $nextFlight;
+                    undef $nextFlight;
+                }
+                else
+                {
+                        $flight->setTakeoffTime($time);
+                }
+                $flight->print("EVENT: LIKELY_FLYING->FLYING ");
+
                 $fa[$count] = "takeoff;$time;$lat;$lon;$ele;$speed";
                 say MYDEBUG  $fa[$count] . "$reason" if ($debug);
                 $count++;
@@ -953,23 +1039,47 @@ GPXPOINT:
         {
             if ($speed < $landingSpeed)
             {
-                $state = TAXI;
-
-                $ap = findNearestAirportWithHint($loc, gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
+                $ap = findNearestAirportWithHint($loc, $ap);
                 $alt_ft = $alt_ft{$ap};
 
-                $fa[$count] = "landing;$time;$lat;$lon;$ele;$speed";
-                say MYDEBUG  $fa[$count] if ($debug);
-                $count++;
+                if ($ele - $alt_ft <= 50)
+                {
+                    $state = TAXI;
+                    
+                
+                    $flight->setLandingTime($time);
+                    $flight->setLandingAirport($ap);
+                
+                    $fa[$count] = "landing;$time;$lat;$lon;$ele;$speed";
+
+                    $landing_i = $i;
+                
+                    $flight->print("EVENT: FLYING->TAXI ");
+
+                    say MYDEBUG  $fa[$count] if ($debug);
+                    $count++;
+                }
+                
             }
         }
-        
-        
-        
+        $i++;
     }
     
+    if ($state == AT_REST)
+    {
+        push @newSegments, $flight;
+        $flight->print("EVENT: FINAL AT_REST");
+
+        $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
+        $count++;
+    }
+
     if ($state == TAXI)
     {
+        $flight->setOnBlockTime($time);
+        push @newSegments, $flight;
+        $flight->print("EVENT: FINAL TAXI->AR_REST ");
+
         $fa[$count] = "onblock;$time;$lat;$lon;$ele;$speed";
         $count++;
     }
@@ -984,13 +1094,17 @@ GPXPOINT:
         "straight level flight: $straightlevel_minutes, descend: $descend_minutes minutes ($total_descend feet)";
     
     say MYDEBUG $flightstats if $debug;
-    return @fa;
+    #return @fa;
+    return @newSegments;
 }
 
 sub findNearestAirportWithHint {
     my $target = shift;
     my $hint = shift;
-    my $dist = $target->distance($hint);
+    my $lat = $lat{$hint};
+    my $lon = $lon{$hint};
+    
+    my $dist = $target->distance(gpxPoint->new($lat, $lon));
     
     if ($dist < 5000)
     {
@@ -1423,6 +1537,18 @@ sub setLandingCount {
     my $self = shift;
     my $lc = shift;
     $self->{'landingCount'} = $lc;
+}
+
+sub setOffBlockTime {
+    my $self = shift;
+    my $obt = shift;
+    $self->{'offBlock'} = $obt;
+}
+
+sub setTakeoffTime {
+    my $self = shift;
+    my $tot = shift;
+    $self->{'takeoffTime'} = $tot;
 }
 
 sub setLandingTime {
