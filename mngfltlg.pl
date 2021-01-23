@@ -151,15 +151,6 @@ if ($action eq "create"){
     my $source = readAirportDirectory();
     $sapt = gpxPoint->new({lat=>$lat{$source},lon=>$lon{$source}});
 
-    #read in the given GPX File
-    #my @to = readGpxFile($gpxName);
-    #if ($#to < 0){
-    #    die "not a valid flight found in $gpxName";
-    #}
-
-    #create flight log entries from the parsed result. One entry for each pair takeoff - landing
-    #my @flightSegments = createFlights(@to);
-
     my @flightSegments = readGpxFile($gpxName);
     if ($#flightSegments < 0){
         die "not a valid flight found in $gpxName";
@@ -572,163 +563,6 @@ sub getGpxName {
     return $gName;
 }
 
-sub createFlights {
-    my @takeOff = @_;
-    my $isFlying = 0;
-    my @newSegments; 
-
-    if ($takeOff[0] =~ /^landing/){
-        $isFlying = 1;
-    }
-    #TODO : Check if first event is landing
-    my $skipnext = 0;
-    my $count = 0;
-    my $last = 0;
-    my $first = 1;
-    my $previous = "";
-    my $nextTakeoffNewFlight = 0;
-    
-EVENT:    foreach $event (@takeOff)
-    {
-        if ($count == $#takeOff){
-            $last = 1;
-        }
-        elsif ($count > 0){
-            $first = 0;
-        }
-        
-        $count++;
-        
-        
-        my ($evt,$time,$lat,$lon,$ele,$speed) = split (/;/, $event);
-        say MYDEBUG  "EVT: $evt $time $lat $lon $ele $speed ($previous)" if ($debug);
-        
-        my $loc = gpxPoint->new({lat=>$lat,lon=>$lon});
-        
-        my $ap = findNearestAirport($loc);
-
-        say MYDEBUG "$evt on AP $ap" if ($debug);
-
-        my $distance = $loc->distance(gpxPoint->new({lat=>$lat{$ap},lon=>$lon{$ap}}));
-        #next unless ($distance < 5000);
-        if ($distance > 5000){
-            $ap = "Unknown";
-        }
-        
-#        my $timeseconds = str2time($time);
-        my $timeseconds = $time;
-
-        
-        if ($evt eq "offblock"){
-            if ($previous eq ""){
-                $offblockTime = $timeseconds;
-                $departureAirport = $ap;
-            }
-            
-            #TODO
-            #
-            #offblock after onblock, skip previous onblock
-            #offblock after takeoff, illegal
-            #offblock after landing, illegal
-            
-            if ($previous eq "onblock")
-            {
-                $onblockTime = 0;
-            }
-            
-            $previous = "offblock";
-        }
-        elsif ($evt eq "takeoff"){
-            #the previous "landing" event was not really a landing,
-            #hence ignore this takeoff
-            if ($skipnext == 1){
-                $skipnext = 0;
-                next EVENT;
-            }
-            
-            if ($isFlying == 1){
-                say "WARNING: takeoff but Flying - $event";
-            }
-            
-            #complete previous segment
-            if ($nextTakeoffNewFlight == 1)
-            {
-                my $flogEntry = flogEntry->new(-1, $pilot,$plane, $departureAirport,
-                $landingAirport, $offblockTime, $takeoffTime,$landingTime,$timeseconds, $rules, $function, 1);
-                
-                $flogEntry->print("FLIGHT") if ($debug);
-                push @newSegments, $flogEntry;
-
-                $isFlying = 1;
-                $offblockTime = $takeoffTime = $timeseconds;
-                $departureAirport = $landingAirport;
-                $nextTakeoffNewFlight = 0;
-                #print "$dayofFlight | $pilot | $departureAirport | $landingAirport | $takeoffTime | $landingTime | $flightDurationMinutes ($flightHours:$flightMinutes)\n";
-            }
-            elsif ($previous eq "offblock" || $first == 1)
-            {
-                $isFlying = 1;
-                $takeoffTime = $timeseconds;
-                if ($first == 1){
-                    $offblockTime = $timeseconds;
-                }
-                $first = 0;
-                $departureAirport = $ap;
-            }
-            else
-            {
-                say "WARNING: Illegal $evt after $previous";
-            }
-            $previous = "takeoff";
-        }
-        elsif ($evt eq "landing")
-        {
-            if ($isFlying == 0){
-                say MYDEBUG "WARNING: landing but not flying - $event";
-            }
-            if ($ap eq "Unknown" && $last == 0){
-                $skipnext = 1;
-                next EVENT;
-            }
-            
-            $apelevation = $alt_ft{$ap};
-            if ($ele > $apelevation + 100){
-                say MYDEBUG "not landing on $ap. Reason: too high ($ele > $apelevation + 100)" if $debug;
-                $skipnext = 1;
-                next EVENT;
-            }
-            
-            $isFlying = 0;
-            $landingAirport = $ap;
-            $landingTime = $timeseconds;
-            $previous = "landing";
-            $nextTakeoffNewFlight = 1;
-        }
-        elsif ($evt eq "onblock")
-        {
-            $onblockTime = $timeseconds;
-            $previous = "onblock";
-            if ($last == 1){
-                my $flogEntry = flogEntry->new(-1, $pilot, $plane, $departureAirport,$landingAirport,
-                    $offblockTime, $takeoffTime,$landingTime,$onblockTime, $rules, $function, 1);
-                
-                $flogEntry->print("FLIGHT") if ($debug);
-                push @newSegments, $flogEntry;
-                #print "$dayofFlight | $pilot | $departureAirport | $landingAirport | $takeoffTime | $landingTime | $flightDurationMinutes ($flightHours:$flightMinutes)\n";
-                
-            }
-            
-        }
-        else
-        {
-            say MYDEBUG "unknown event $evt";
-        }
-    }
-
-    return @newSegments;
-}
-
-
 sub readGpxFile {
     my $likelytakeoffspeed = 50;
     my $takeoffSpeed = 70;
@@ -959,6 +793,12 @@ GPXPOINT:
                             $time, $time, 0,0, $rules, $function, 1);
                         $flight->setOnBlockTime($time);
                     }
+                    $flight->setStats($elapsed_minutes / 2,$distance / 1000 , $climb_minutes / 2 ,
+                        $straightlevel_minutes / 2 , $descend_minutes / 2 , $total_climb, $total_descend);
+                    $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
+                    $total_climb = 0; $total_descend = 0;
+                    $flight->printStats () if $debug;
+                    
                     push @newSegments, $flight;
                     $flight = $nextFlight;
                     undef $nextFlight;
@@ -1015,6 +855,13 @@ GPXPOINT:
                         $nextFlight = flogEntry->new(-1, $pilot, $plane, $ap ,"", $time, $time, 0,0, $rules, $function, 1);
                         $flight->setOnBlockTime($time);
                     }
+
+                    $flight->setStats($elapsed_minutes / 2,$distance / 1000 , $climb_minutes / 2 ,
+                        $straightlevel_minutes / 2 , $descend_minutes / 2 , $total_climb, $total_descend);
+                    $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
+                    $total_climb = 0; $total_descend = 0;
+                    $flight->printStats () if $debug;
+
                     push @newSegments, $flight;
                     $flight = $nextFlight;
                     undef $nextFlight;
@@ -1067,6 +914,12 @@ GPXPOINT:
     
     if ($state == AT_REST)
     {
+        $flight->setStats($elapsed_minutes / 2,$distance / 1000 , $climb_minutes / 2 ,
+            $straightlevel_minutes / 2 , $descend_minutes / 2 , $total_climb, $total_descend);
+        $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
+        $total_climb = 0; $total_descend = 0;
+        $flight->printStats () if $debug;
+
         push @newSegments, $flight;
         $flight->print("EVENT: FINAL AT_REST");
 
@@ -1371,6 +1224,31 @@ sub new {
     }, $class;
     
     return $self;
+}
+
+sub setStats {
+
+    my $class = shift;
+    my ($m, $d, $cm, $lm, $dm, $tc, $td) = @_;
+    $self->{minutes} = $m;
+    $self->{distance} = $d;
+    $self->{climb_minutes} = $cm;
+    $self->{level_minutes} = $lm;
+    $self->{descend_minutes} = $dm;
+    $self->{total_climb} = $tc;
+    $self->{total_descend} = $td;
+
+}
+
+sub printStats {
+    my $class = shift;
+    say main::MYDEBUG "Total time: $self->{minutes} min";
+    say main::MYDEBUG "Total disctance $self->{distance} km";
+    say main::MYDEBUG "Climb: $self->{climb_minutes} min";
+    say main::MYDEBUG "Level flight: $self->{level_minutes} min";
+    say main::MYDEBUG "Descend: $self->{descend_minutes} min";
+    say main::MYDEBUG "Total Climb: $self->{total_climb} ft";
+    say main::MYDEBUG "Total descend: $self->{total_descend} ft";
 }
 
 
