@@ -713,24 +713,42 @@ GPXPOINT:
             $alt_avg[$elapsed_minutes] /= $avg_cnt;
 
             my $fpm = $fpm[$elapsed_minutes];
+            my $speed = $speed_avg[$elapsed_minutes];
             if ($fpm < -200)
             {
                     $descend_minutes++;
                     $total_descend += $alt_diff;
+                    $flying_minutes++;
             }
             elsif ($fpm > 200)
             {
                     $climb_minutes++;
                     $total_climb += $alt_diff;
+                    $flying_minutes++;
             }
-            else
+            elsif ($state == FLYING)
             {
                 $straightlevel_minutes++;
+                $flying_minutes++;
             }
+            elsif ($flight->offBlock_seconds() != 0)
+            {
+                if ($state == TAXI)
+                { 
+                    $taxi_minutes++
+                }
+                else
+                {
+                    $rest_minutes++;
+                }   
+            }
+
             
             my $text = "MINUTES (count = " . $avg_cnt . "): " . $elapsed_minutes . ", FPM: " . $fpm[$elapsed_minutes] . ", SPEED AVG: " .
-                $speed_avg[$elapsed_minutes] . ", ALT AVG: " . $alt_avg[$elapsed_minutes];
+                $speed_avg[$elapsed_minutes] . ", ALT AVG: " . $alt_avg[$elapsed_minutes] . 
+                " REST/TAXI/FLYING: " . "$rest_minutes / $taxi_minutes / $flying_minutes"  ;
             say MYDEBUG $text if $debug;
+
 
             $lastele = $ele;
             $elapsed_minutes++;
@@ -786,14 +804,15 @@ GPXPOINT:
                         $flight->setOnBlockTime($time);
                     }
 
-                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $climb_minutes /2,
-                        $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
+                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $rest_minutes / 2, $taxi_minutes / 2,
+                    $flying_minutes / 2, $climb_minutes /2, $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
                     $flight->setStats($stats);
                     $flight->{stats}->print() if $debug;
 
                     $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
                     $total_climb = 0; $total_descend = 0;
-                    
+                    $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
+     
                     push @newSegments, $flight;
                     $flight = $nextFlight;
                     undef $nextFlight;
@@ -849,14 +868,15 @@ GPXPOINT:
                         $flight->setOnBlockTime($time);
                     }
 
-                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $climb_minutes /2,
-                        $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
+                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $rest_minutes / 2, $taxi_minutes / 2,
+                        $flying_minutes / 2, $climb_minutes /2, $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
                     $flight->setStats($stats);
 
                     $flight->{stats}->print() if $debug;
 
                     $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
                     $total_climb = 0; $total_descend = 0;
+                    $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
 
                     push @newSegments, $flight;
                     $flight = $nextFlight;
@@ -905,13 +925,14 @@ GPXPOINT:
     
     if ($state == AT_REST)
     {
-        my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $climb_minutes /2,
-            $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
+        my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $rest_minutes / 2, $taxi_minutes / 2,
+        $flying_minutes / 2, $climb_minutes /2, $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
         $flight->setStats($stats);
         $flight->{stats}->print() if $debug;
         
         $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
         $total_climb = 0; $total_descend = 0;
+        $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
 
         push @newSegments, $flight;
         $flight->print("EVENT: FINAL AT_REST");
@@ -1200,11 +1221,14 @@ our $debug;
 sub new 
 {
     my $class = shift;
-    my ($flightDistanceNM,$flightMinutes, $climbMinutes, $levelMinutes, $descendMinutes,$totalClimbFt, $totalDescendFt) = @_;
+    my ($flightDistanceNM, $elapsedMinutes, $restMinutes, $taxiMinutes, $flyingMinutes, $climbMinutes, $levelMinutes, $descendMinutes,$totalClimbFt, $totalDescendFt) = @_;
     my $self = bless 
     {
-        flightMinutes => $flightMinutes,
         flightDistanceNM => round($flightDistanceNM),
+        elapsedMinutes => $elapsedMinutes,
+        restMinutes => $restMinutes,
+        taxiMinutes => $taxiMinutes,
+        flyingMinutes => $flyingMinutes,
         climbMinutes => $climbMinutes,
         levelMinutes => $levelMinutes,
         descendMinutes => $descendMinutes,
@@ -1219,11 +1243,14 @@ sub new
 sub print 
 {
     my $self = shift;
-    say main::MYDEBUG "Total time: $self->{flightMinutes} min";
-    say main::MYDEBUG "Total distance $self->{flightDistanceNM} NM";
+    say main::MYDEBUG "Total time: $self->{elapsedMinutes} min";
+    say main::MYDEBUG "Rest time: $self->{restMinutes} min";
+    say main::MYDEBUG "Taxi time: $self->{taxiMinutes} min";
+    say main::MYDEBUG "Flight time: $self->{flyingMinutes} min";
     say main::MYDEBUG "Climb: $self->{climbMinutes} min";
     say main::MYDEBUG "Level flight: $self->{levelMinutes} min";
     say main::MYDEBUG "Descend: $self->{descendMinutes} min";
+    say main::MYDEBUG "Total distance $self->{flightDistanceNM} NM";
     say main::MYDEBUG "Total Climb: $self->{totalClimbFt} ft";
     say main::MYDEBUG "Total descend: $self->{totalDescendFt} ft";
 
