@@ -10,7 +10,7 @@ use Getopt::Long;
 use Date::Parse;
 
 use Math::Trig;
-use Math::Round;
+#use Math::Round;
 use POSIX;# for floor etc.
 use File::Temp;
 use File::Copy;
@@ -563,6 +563,11 @@ sub getGpxName {
     return $gName;
 }
 
+use constant {
+    TI_UNIT => 30,
+    TI_PER_MINUTE => 2,
+};
+
 sub readGpxFile {
     my $likelytakeoffspeed = 50;
     my $takeoffSpeed = 70;
@@ -637,7 +642,7 @@ sub readGpxFile {
         $count++;
 
         $state = FLYING;
-        $distance = round($distance /(1000 * KM_FOR_NM));
+        $distance = int(($distance /(1000 * KM_FOR_NM)) + 0.5);
         say MYDEBUG "Log starts in flight $distance NMs from $ap, ALT = $ele, SPEED = $speed)" if ($debug);
 
         $ap = "Unknown";
@@ -706,7 +711,7 @@ GPXPOINT:
         $alt_avg[$elapsed_minutes] += $ele;
         $avg_cnt++;
         
-        if ($elapsed > 30){
+        if ($elapsed > TI_UNIT){
             my $alt_diff = $loc->ele() - $lastele;
             $fpm[$elapsed_minutes] = $alt_diff * 60 / $elapsed;
             $speed_avg[$elapsed_minutes] /= $avg_cnt;
@@ -714,13 +719,13 @@ GPXPOINT:
 
             my $fpm = $fpm[$elapsed_minutes];
             my $speed = $speed_avg[$elapsed_minutes];
-            if ($fpm < -200)
+            if ($fpm < -100)
             {
                     $descend_minutes++;
                     $total_descend += $alt_diff;
                     $flying_minutes++;
             }
-            elsif ($fpm > 200)
+            elsif ($fpm > 100)
             {
                     $climb_minutes++;
                     $total_climb += $alt_diff;
@@ -752,16 +757,16 @@ GPXPOINT:
 
             $lastele = $ele;
             $elapsed_minutes++;
-            $elapsed -= 30;
+            $elapsed -= TI_UNIT;
             $avg_cnt = 0;
             
             #todo: that's not quite right -- all climb is associated to the first timeslot
-            while ($elapsed > 30) {
+            while ($elapsed > TI_UNIT) {
                 $fpm[$elapsed_minutes] = 0;
                 $speed_avg[$elapsed_minutes] = $speed_avg[$elapsed_minutes - 1];
                 $alt_avg[$elapsed_minutes] = $alt_avg[$elapsed_minutes - 1];
                 $elapsed_minutes++;
-                $elapsed -= 30;
+                $elapsed -= TI_UNIT;
             }
         }
         
@@ -804,8 +809,10 @@ GPXPOINT:
                         $flight->setOnBlockTime($time);
                     }
 
-                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $rest_minutes / 2, $taxi_minutes / 2,
-                    $flying_minutes / 2, $climb_minutes /2, $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
+                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
+                    $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
+                    $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
+                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend); 
                     $flight->setStats($stats);
                     $flight->{stats}->print() if $debug;
 
@@ -868,8 +875,11 @@ GPXPOINT:
                         $flight->setOnBlockTime($time);
                     }
 
-                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $rest_minutes / 2, $taxi_minutes / 2,
-                        $flying_minutes / 2, $climb_minutes /2, $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
+                    my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
+                    $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
+                    $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
+                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend);
+                    
                     $flight->setStats($stats);
 
                     $flight->{stats}->print() if $debug;
@@ -925,8 +935,10 @@ GPXPOINT:
     
     if ($state == AT_REST)
     {
-        my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / 2, $rest_minutes / 2, $taxi_minutes / 2,
-        $flying_minutes / 2, $climb_minutes /2, $straightlevel_minutes / 2, $descend_minutes / 2, $total_climb, $total_descend); 
+        my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
+                    $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
+                    $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
+                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend);
         $flight->setStats($stats);
         $flight->{stats}->print() if $debug;
         
@@ -1212,7 +1224,7 @@ sub timediff {
 package flogStats;
 use 5.10.0;
 use POSIX;
-use Math::Round;
+#use Math::Round;
 
 our $debug;
 
@@ -1224,7 +1236,7 @@ sub new
     my ($flightDistanceNM, $elapsedMinutes, $restMinutes, $taxiMinutes, $flyingMinutes, $climbMinutes, $levelMinutes, $descendMinutes,$totalClimbFt, $totalDescendFt) = @_;
     my $self = bless 
     {
-        flightDistanceNM => round($flightDistanceNM),
+        flightDistanceNM => int($flightDistanceNM + 0.5),
         elapsedMinutes => $elapsedMinutes,
         restMinutes => $restMinutes,
         taxiMinutes => $taxiMinutes,
