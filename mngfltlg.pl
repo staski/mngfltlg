@@ -178,6 +178,15 @@ if ($action eq "create"){
             # copy gpxFile to flights/aearofFlight/flight->id
             # write: timestamp AND log-entry into file log.txt
             # write: file details.txt (containing ...)
+        
+            my $jsparser = JSON->new->utf8;
+            $jsparser->convert_blessed(1);
+            my $jsstats = $jsparser->encode($flight->{stats});
+            say MYDEBUG "$jsstats" if $debug;   
+            my $statfile = $dir . "/" . "stats1.txt";
+            open (STATFILE, ">$statfile") || warn "can't open statfile $statfile: $!";
+            say STATFILE "$jsstats";
+            close (STATFILE);  
         }
     }
     
@@ -247,6 +256,29 @@ sub cleanupDirForFlight {
     }
 }
 
+sub readStatsForFlight {
+    my $flight = shift;
+    my $dir = getDirForFlight($flight);
+    my $statfile = $dir . "/" . "stats1.txt";
+    my $flightstats;
+
+    say MYDEBUG "$statfile" if $debug;
+    
+    my $handle = open (STATFILE, "<$statfile");
+    if ($handle)
+    {
+        my $json_text = <STATFILE>;
+        close (STATFILE);
+        $flightstats = flogStats->read_json($json_text);
+        say MYDEBUG "STATS $flightstats" if $debug;
+    }
+    else
+    {
+        say MYDEBUG "WARNING: can't open statfile $statfile: $!";
+    }
+    return $flightstats;
+}
+
 sub joinFlights {
     my @af = @_;
     my $prev= $af[0];
@@ -263,6 +295,7 @@ sub joinFlights {
                 $prev->setOnBlockTime($this->onBlock_seconds);
                 $prev->setLandingAirport($this->landingAirport);
                 $prev->setLandingCount($prev->landingCount + $this->landingCount);
+                $prev->stats()->merge($this->stats());
         }
         else {
             $prev = $this;
@@ -385,6 +418,11 @@ sub readLog {
         chop($landings);
         my $flight = new flogEntry ($id, $pilot, $plane, $departure, $destination, 
             $offblock, $takeoff, $arrival, $onblock, $rules, $function, $landings);
+        
+        my $flightstats = readStatsForFlight($flight);
+        if ($flightstats){
+            $flight->setStats($flightstats);
+        }
         
         say MYDEBUG $flight->departureAirport . "$departure" if $debug;
         
@@ -1252,6 +1290,22 @@ sub new
 
 }
 
+sub merge {
+    my $self = shift;
+    my $other = shift;
+
+    $self->{flightDistanceNM} += $other->{flightDistanceNM};
+    $self->{elapsedMinutes} += $other->{elapsedMinutes};
+    $self->{restMinutes} += $other->{restMinutes};
+    $self->{taxiMinutes} += $other->{taxiMinutes};
+    $self->{flyingMinutes} += $other->{flyingMinutes};
+    $self->{climbMinutes} += $other->{climbMinutes};
+    $self->{levelMinutes} += $other->{levelMinutes};
+    $self->{descendMinutes} += $other->{descendMinutes};
+    $self->{totalClimbFt} += $other->{totalClimbFt};
+    $self->{totalDescendFt} += $other->{totalDescendFt};    
+}
+
 sub print 
 {
     my $self = shift;
@@ -1270,6 +1324,14 @@ sub print
 
 sub TO_JSON { 
     return { %{ shift() } }; 
+}
+
+sub read_json {
+    my $self = shift;
+    my $json_text = shift;
+    my $ref = JSON->new->utf8->decode("$json_text");
+    bless $ref;
+    return $ref;
 }
 
 
@@ -1306,6 +1368,12 @@ sub setStats
 {
     my $self = shift;
     $self->{stats} = shift;
+}
+
+sub stats 
+{
+    my $self = shift;
+    return $self->{stats};
 }
 
 sub fromString {
