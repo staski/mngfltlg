@@ -707,10 +707,15 @@ GPXPOINT:
     foreach $gpx (@allnodes) {
         my $lat = $gpx->getAttribute('lat');
         my $lon = $gpx->getAttribute('lon');
+        my $timestr;
                 
         $ele = ceil($xpc->findvalue('g:ele', $gpx) * $feet_for_m);
         $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
-        $time = str2time($xpc->findvalue('g:time', $gpx));
+        my @speedArray = $xpc->findnodes('g:speed', $gpx);
+        my $speedExists = @speedArray;
+        
+        $timestr = $xpc->findvalue('g:time', $gpx);
+        $time = str2time($timestr);
         
         my $prev = $loc;
 
@@ -734,7 +739,7 @@ GPXPOINT:
         $timediff = $loc->{gpxtime} - $prev->{gpxtime};
         
         if ($timediff == 0){
-            say MYDEBUG "SKIP" if ($debug);
+            #say MYDEBUG "SKIP" if ($debug);
             $loc = $prev;
             next GPXPOINT;
         }
@@ -745,6 +750,13 @@ GPXPOINT:
         $track = $prev->bearing($loc);
         $fpm = ($loc->ele() - $prev->ele()) * 60 / $timediff;
 
+        if ($speedExists == 0)
+        {
+            $speed = $loc->distance($prev) / $timediff;
+            $speed = $speed * 3600 / 1852;
+            say MYDEBUG "speed from GPX file was $speedExists, using $speed kts from coordinates instead" if ($debug);
+        }
+        
         $speed_avg[$elapsed_minutes] += $speed;
         $alt_avg[$elapsed_minutes] += $ele;
         $avg_cnt++;
@@ -787,7 +799,7 @@ GPXPOINT:
             }
 
             
-            my $text = "MINUTES (count = " . $avg_cnt . "): " . $elapsed_minutes . ", FPM: " . $fpm[$elapsed_minutes] . ", SPEED AVG: " .
+            my $text = $timestr . ": (count = " . $avg_cnt . "), elapsed: " . $elapsed_minutes / TI_PER_MINUTE  . ", FPM: " . $fpm[$elapsed_minutes] . ", SPEED AVG: " .
                 $speed_avg[$elapsed_minutes] . ", ALT AVG: " . $alt_avg[$elapsed_minutes] . 
                 " REST/TAXI/FLYING: " . "$rest_minutes / $taxi_minutes / $flying_minutes"  ;
             say MYDEBUG $text if $debug;
@@ -869,12 +881,13 @@ GPXPOINT:
 
                 $count++;
                 
-                $flight->print("EVENT: TAXI->TAKEOFF ");
+                $flight->print("EVENT: TAXI->FLYING ");
 
             }
             elsif ($speed > $likelytakeoffspeed)
             {
                     $state = LIKELY_FLYING;
+                    $flight->print("EVENT: TAXI->LIKELY_FLYING ");
             }
             
             if ($speed < $taxiSpeed)
@@ -934,13 +947,15 @@ GPXPOINT:
                 {
                         $flight->setTakeoffTime($time);
                 }
-                $flight->print("EVENT: LIKELY_FLYING->FLYING ");
+                $reason = "EVENT: LIKELY_FLYING->FLYING ($reason)";
+                $flight->print($reason);
 
                 $count++;
             }
             elsif ($speed < $landingSpeed)
             {
                 $state = TAXI;
+                $flight->print("EVENT: LIKELY_FLYING->TAXI");
             }
             
         }
@@ -964,6 +979,9 @@ GPXPOINT:
                     $flight->print("EVENT: FLYING->TAXI ");
 
                     $count++;
+                } else
+                {
+                    say MYDEBUG "no landing: SPEED is $speed but ALT is $ele (>$alt_ft at $ap)" if $debug;
                 }
                 
             }
@@ -1018,8 +1036,8 @@ sub findNearestAirportWithHint {
     my $hint = shift;
     my $lat = $lat{$hint};
     my $lon = $lon{$hint};
-    
-    my $dist = $target->distance(gpxPoint->new($lat, $lon));
+
+    my $dist = $target->distance(gpxPoint->new({lat=>$lat, lon=>$lon}));
     
     if ($dist < 5000)
     {
@@ -1226,7 +1244,7 @@ sub distance {
     my $distance = Math::Trig::great_circle_distance($lon1,$lat1,$lon2,$lat2) * 6367 * 1000;
     
     $distance = POSIX::ceil($distance);
-    say MYDEBUG "DISTANCE $distance" if ($debug);
+    say main::MYDEBUG "DISTANCE $distance" if ($debug);
     
     return $distance;
 }
