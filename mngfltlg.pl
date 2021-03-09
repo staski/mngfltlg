@@ -756,7 +756,7 @@ GPXPOINT:
             $speed = $speed * 3600 / 1852;
             say MYDEBUG "speed from GPX file was $speedExists, using $speed kts from coordinates instead" if ($debug);
         }
-        
+
         $speed_avg[$elapsed_minutes] += $speed;
         $alt_avg[$elapsed_minutes] += $ele;
         $avg_cnt++;
@@ -862,13 +862,16 @@ GPXPOINT:
                     my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
                     $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
                     $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
-                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend); 
+                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend, 
+                    $speed_max, $alt_max
+                    ); 
                     $flight->setStats($stats);
                     $flight->{stats}->print() if $debug;
 
                     $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
                     $total_climb = 0; $total_descend = 0;
                     $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
+                    $speed_max = 0; $alt_max = 0;
      
                     push @newSegments, $flight;
                     $flight = $nextFlight;
@@ -929,8 +932,10 @@ GPXPOINT:
                     my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
                     $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
                     $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
-                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend);
-                    
+                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend, 
+                    $speed_max, $alt_max
+                    ); 
+
                     $flight->setStats($stats);
 
                     $flight->{stats}->print() if $debug;
@@ -938,6 +943,7 @@ GPXPOINT:
                     $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
                     $total_climb = 0; $total_descend = 0;
                     $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
+                    $speed_max = 0; $alt_max = 0;
 
                     push @newSegments, $flight;
                     $flight = $nextFlight;
@@ -994,13 +1000,16 @@ GPXPOINT:
         my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
                     $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
                     $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
-                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend);
+                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend,
+                    $speed_max, $alt_max
+                    );
         $flight->setStats($stats);
         $flight->{stats}->print() if $debug;
         
         $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
         $total_climb = 0; $total_descend = 0;
         $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
+        $speed_max = 0; $alt_max = 0;
 
         push @newSegments, $flight;
         $flight->print("EVENT: FINAL AT_REST");
@@ -1289,7 +1298,7 @@ our $debug;
 sub new 
 {
     my $class = shift;
-    my ($flightDistanceNM, $elapsedMinutes, $restMinutes, $taxiMinutes, $flyingMinutes, $climbMinutes, $levelMinutes, $descendMinutes,$totalClimbFt, $totalDescendFt) = @_;
+    my ($flightDistanceNM, $elapsedMinutes, $restMinutes, $taxiMinutes, $flyingMinutes, $climbMinutes, $levelMinutes, $descendMinutes,$totalClimbFt, $totalDescendFt, $speedMax, $altMax) = @_;
     my $self = bless 
     {
         flightDistanceNM => int($flightDistanceNM + 0.5),
@@ -1302,6 +1311,8 @@ sub new
         descendMinutes => $descendMinutes,
         totalClimbFt => $totalClimbFt,
         totalDescendFt => $totalDescendFt,
+        speedMax => $speedMax,
+        altMax => $altMax
     }, $class;
     
     return $self;
@@ -1321,12 +1332,16 @@ sub merge {
     $self->{levelMinutes} += $other->{levelMinutes};
     $self->{descendMinutes} += $other->{descendMinutes};
     $self->{totalClimbFt} += $other->{totalClimbFt};
-    $self->{totalDescendFt} += $other->{totalDescendFt};    
+    $self->{totalDescendFt} += $other->{totalDescendFt}; 
+    $self->{speedMax}  = $self->{speedMax} > $other->{speedMax} ? $self->{speedMax} : $other->{$speedMax};  
+    $self->{altMax}  = $self->{altMax} > $other->{altMax} ? $self->{altMax} : $other->{$altMax};  
 }
 
 sub print 
 {
     my $self = shift;
+    my $avgSpeed = 3600 * $self->{flightDistanceNM} / ($self->{flyingMinutes} * 60);
+
     say main::MYDEBUG "Total time: $self->{elapsedMinutes} min";
     say main::MYDEBUG "Rest time: $self->{restMinutes} min";
     say main::MYDEBUG "Taxi time: $self->{taxiMinutes} min";
@@ -1337,6 +1352,9 @@ sub print
     say main::MYDEBUG "Total distance $self->{flightDistanceNM} NM";
     say main::MYDEBUG "Total Climb: $self->{totalClimbFt} ft";
     say main::MYDEBUG "Total descend: $self->{totalDescendFt} ft";
+    say main::MYDEBUG "Maximum altitude: $self->{altMax} ft";
+    say main::MYDEBUG "Maximum speed: $self->{speedMax} kts";
+    say main::MYDEBUG "Average speed: $avgSpeed kts";
 
 }
 
