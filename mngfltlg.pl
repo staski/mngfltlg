@@ -182,7 +182,7 @@ if ($action eq "create"){
             my $jsparser = JSON->new->utf8;
             $jsparser->convert_blessed(1);
             my $jsstats = $jsparser->encode($flight->{stats});
-            say MYDEBUG "$jsstats" if $debug;   
+            say MYDEBUG "current statistics: $jsstats" if $debug;   
             my $statfile = $dir . "/" . "stats1.txt";
             open (STATFILE, ">$statfile") || warn "can't open statfile $statfile: $!";
             say STATFILE "$jsstats";
@@ -269,7 +269,7 @@ sub readStatsForFlight {
     {
         my $json_text = <STATFILE>;
         close (STATFILE);
-        $flightstats = flogStats->read_json($json_text);
+        $flightstats = flogStats->read_json($json_text) || say MYDEBUG "WARNING: invalid statfile $statfile: $! ";
         say MYDEBUG "STATS $flightstats" if $debug;
     }
     else
@@ -325,6 +325,7 @@ sub initCGI {
         $debug = $cgi_query->url_param('debug');
         $action = $cgi_query->url_param('action');
         $request_method = $cgi_query->request_method();
+        my $referer = $cgi_query->referer();
         
         if ($action eq "update" || $action eq "delete"){
             $postdata = $cgi_query->param('POSTDATA');
@@ -340,7 +341,12 @@ sub initCGI {
         }
 
         if ($json == 1){
-            print $cgi_query->header('application/json');
+            if ($referer =~ /venus-flytrap.de/){
+              print $cgi_query->header( -type => 'application/json', -access_control_allow_origin => 'https://venus-flytrap.de');
+            }else{
+              print $cgi_query->header( -type => 'application/json');
+            }
+            #print $cgi_query->header('Access-Control-Allow-Origin: *');
         } else {
             print $cgi_query->header('text/html');
         }
@@ -1020,8 +1026,21 @@ GPXPOINT:
     if ($state == TAXI)
     {
         $flight->setOnBlockTime($time);
+        my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
+                    $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
+                    $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
+                    $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend,
+                    $speed_max, $alt_max
+                    );
+        $flight->setStats($stats);
+        $flight->{stats}->print() if $debug;
+        
+        $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
+        $total_climb = 0; $total_descend = 0;
+        $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
+        $speed_max = 0; $alt_max = 0;
         push @newSegments, $flight;
-        $flight->print("EVENT: FINAL TAXI->AR_REST ");
+        $flight->print("EVENT: FINAL TAXI->AT_REST ");
 
         $count++;
     }
@@ -1366,8 +1385,11 @@ sub read_json {
     my $self = shift;
     my $json_text = shift;
     my $ref = JSON->new->utf8->decode("$json_text");
-    bless $ref;
-    return $ref;
+    if ($ref eq ""){
+        return $ref;
+    }
+    return bless $ref;
+    #return $ref;
 }
 
 
