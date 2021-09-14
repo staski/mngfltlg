@@ -1,6 +1,6 @@
 # mngfltlg
-manage flight log backend functionality
-this goes together with https://github.com/staski//fltlgtbl, which manages the frontend part of the flight log
+manage flight log backend functionality.
+This goes together with https://github.com/staski//fltlgtbl, which manages the frontend part of the flight log
 using Vue.js
 
 Demo of the flight log is available at 
