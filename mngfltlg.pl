@@ -47,7 +47,7 @@ my $rules = "VFR";
 my $function = "PIC";
 
 $version_major = 0;
-$version_minor = 92;
+$version_minor = 94;
 
 #the highest id *ever* found in the log. This number is strictly increasing
 #over time
@@ -125,7 +125,6 @@ if ($action  eq "update" && $request_method eq "POST"){
 
 if ($action  eq "delete" && $request_method eq "POST"){
     my $flight = flogEntry->read_json($postdata);
-#    $flight->print("FLIGHT") if $debug;
     print MYDEBUG  "FLIGHTS before $#allflights\n" if $debug;
     deleteLogEntry($flight);
     print MYDEBUG  "FLIGHTS after $#allflights\n" if $debug;
@@ -388,7 +387,7 @@ sub readLog {
 
     my $id, $pilot, $plane, $departure, $destination, 
                 $offblock, $takeoff, $arrival, $onblock, $landings,
-                $rules, $function;
+                $rules, $function, $timestamp;
     open (LOGFILE, "<$logFile") || warn "unable to open logfile: $logFile: $!";
     while (<LOGFILE>){
         if (/FLTLGHDR;(\d+)\.(\d+);(\d+)/){
@@ -405,6 +404,7 @@ sub readLog {
             $onblock = $arrival;
             $rules ="VFR";
             $function ="PIC";
+            $timestamp = time()
         }
         elsif ($logversion_major == 0 && $logversion_minor <= 91)
         {
@@ -412,26 +412,34 @@ sub readLog {
                 $offblock, $takeoff, $arrival, $onblock, $landings ) = split(/;/);
             $rules ="VFR";
             $function ="PIC";
+            $timestamp = time()
 
+        }
+        elsif ($logversion_major == 0 && $logversion_minor <= 93)
+        {
+            ( $id, $pilot, $plane, $departure, $destination,
+                $offblock, $takeoff, $arrival, $onblock,
+                $rules, $function, $landings ) = split(/;/);
+                $timestamp = time()
         }
         else
         {
             ( $id, $pilot, $plane, $departure, $destination,
                 $offblock, $takeoff, $arrival, $onblock,
-                $rules, $function, $landings ) = split(/;/);
-
+                $rules, $function, $landings, $timestamp  ) = split(/;/);
         }
-        chop($landings);
+
+        chop($timestamp);
         my $flight = new flogEntry ($id, $pilot, $plane, $departure, $destination, 
-            $offblock, $takeoff, $arrival, $onblock, $rules, $function, $landings);
+            $offblock, $takeoff, $arrival, $onblock, $rules, $function, $landings, $timestamp);
         
         my $flightstats = readStatsForFlight($flight);
         if ($flightstats){
             $flight->setStats($flightstats);
         }
         
-        say MYDEBUG $flight->departureAirport . "$departure" if $debug;
-        
+        say MYDEBUG $flight->departureAirport . ", $departure" if $debug;
+
         push @allflights,$flight;
         if ($id >= $highestid){
             $highestid = $id;
@@ -502,6 +510,7 @@ sub updateLogEntry {
     }
 
     if ($IDX >= 0){
+        $flight->setTimestamp($allflights[$IDX]->timestamp);
         splice (@allflights, $IDX, 1, $flight);
         return 1;
     }
@@ -1403,7 +1412,10 @@ our $debug;
 
 sub new {
     my $class = shift;
-    my ( $id, $pilot, $plane, $dap, $lap, $offblock, $tot, $lat, $onblock, $rls, $fctn, $lc ) = @_;
+    my ( $id, $pilot, $plane, $dap, $lap, $offblock, $tot, $lat, $onblock, $rls, $fctn, $lc, $ts ) = @_;
+    if (!defined($ts)) {
+        $ts = time();
+    }
     my $self = bless {
         id => $id,
         plane => $plane,
@@ -1417,6 +1429,7 @@ sub new {
         rules => $rls,
         function => $fctn,
         landingCount => $lc,
+        timestamp => $ts,
     }, $class;
     
     return $self;
@@ -1563,6 +1576,22 @@ sub function {
     return $self->{'function'};
 }
 
+sub timestamp {
+    my $self = shift;
+    return $self->{'timestamp'}
+}
+
+sub age {
+    my $self = shift;
+    return time() - $self->{'timestamp'}
+}
+
+sub setTimestamp {
+        my $self = shift;
+        my $rules = shift;
+        $self->{'timestamp'} = $rules;
+}
+
 sub setRules {
         my $self = shift;
         my $rules = shift;
@@ -1672,7 +1701,8 @@ sub logFileEntry {
     ";" . $self->onBlock_seconds() .
     ";" . $self->rules .
     ";" . $self->function .
-    ";" . $self->landingCount;
+    ";" . $self->landingCount .
+    ";" . ($self->timestamp ? $self->timestamp : time());
 
     say "$text" if $debug;
     return $text;
@@ -1693,7 +1723,8 @@ sub print {
     ";" . $self->onBlock_seconds .
     ";" . $self->rules .
     ";" . $self->function .
-    ";" . $self->landingCount;
+    ";" . $self->landingCount .
+    ";" . $self->timestamp;
     
     say main::MYDEBUG "$text\n";
 }
