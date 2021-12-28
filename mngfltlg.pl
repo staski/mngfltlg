@@ -25,12 +25,16 @@ use JSON;
 package main;
 
 my $scriptName = $0;
-#possible values: add, list, read, delete
 
+#possible values: add, list, read, delete
 my $caction = "read";
+
 my $json = 1;
 $flightdir = "./flights";
 my $glogFile = $flightdir . "/flightLog.txt";
+
+$cfgdir = "./cfg";
+$cfgFile = $cfgdir . "/flightLog.cfg";
 
 my $postdata;
 my $request_method;
@@ -49,11 +53,16 @@ my $function = "PIC";
 $version_major = 0;
 $version_minor = 94;
 
+#the current number of entries in the log
+$numentries=0;
 #the highest id *ever* found in the log. This number is strictly increasing
 #over time
 $loghighestid = 0;
-$debug_var;
 $tracefile =  $flightdir . "/trace.log";
+
+#configuration variables
+$maxage = 0;
+$maxentries = 10000;
 
 use constant {
     FEET_FOR_M => 3.28084,
@@ -82,6 +91,8 @@ GetOptions ("debug=s" => \$debug,
             "json!" => \$json
 );
 
+open (MYDEBUG, ">$tracefile") || die "can't open trace $tracefile: $!";
+
 $isCGI = isCGI($scriptName);
 
 my $cgi_query = initCGI($isCGI);
@@ -101,9 +112,17 @@ say MYDEBUG "ACTION=$action" if $debug;
 $actionParam = getActionParams($isGCI, $action);
 say MYDEBUG  "ACTIONPARAM=$postdata" if $debug;
 
+readCfg($cfgFile);
 readLog($glogFile);
 
+#exit;
 $mystart = time;
+
+if ($action eq "cleanup" && !$isCGI) {
+    say MYDEBUG "Starting Cleanup" if $debug;
+    doCleanup();
+    writeLog($glogFile);
+}
 
 if ($action eq "read"){
         my $JS = JSON->new->utf8;
@@ -112,7 +131,6 @@ if ($action eq "read"){
         say "$logArray";
 
 }
-
 
 if ($action  eq "update" && $request_method eq "POST"){
     my $flight = flogEntry->read_json($postdata);
@@ -161,6 +179,12 @@ if ($action eq "create"){
 
     foreach my $flight (@jap) {
         $flight->setPilot($pilot);
+        
+        if (($#allflights + 1) == $maxentries){
+            say MYDEBUG " maximum number of entries reached ($maxentries)";
+            last;
+        }
+
         my $result = addLogEntry($flight);
         if ($result > 0){
                 $flight->setId($result);
@@ -170,7 +194,7 @@ if ($action eq "create"){
             cleanupDirForFlight($flight);
             my $dir = createDirForFlight($flight);
             my $dest = $dir . "/" . "track.gpx";
-            copy ($gpxName, $dest) || die "can't copy $gpxName to $ dest: $!";
+            copy ($gpxName, $dest) || die "can't copy $gpxName to $dest: $!";
 
             # check if directory 'flights/yearofflight exists
             # create directory flights/yearofflight/flight->id
@@ -200,6 +224,57 @@ if ($action eq "create"){
 
 my $duration = time - $mystart;
 say MYDEBUG "FINISHED after $duration seconds\n" if $debug;
+
+sub doCleanup {
+    my $flight;
+    my $ct = time();
+    my @todelete;
+
+    if ($ct <= 0){
+        say MYDEBUG "maxage is $maxage, nothing to do" if $debug;
+        return;
+    }
+
+    foreach $flight (@allflights) {
+        if ($ct - $flight->timestamp > $maxage) {
+            push @todelete, $flight;
+        } 
+    }
+    foreach $flight (@todelete) {
+        my $diff = $ct - $flight->timestamp;
+        $flight->print("Diff= $diff, deleteing Entry: ") if $debug;
+        deleteLogEntry($flight);
+    }
+}
+
+sub readCfg {
+    my $cfg = shift;
+
+    my $handle = open (CFG, "<$cfg");
+    my $key, $value;
+
+    if ($handle) {
+        while (<CFG>) {
+            ($key, $value)   =  split(/:/);
+            $key =~ s/\s*(\S+)\s*/$1/;
+            $value =~ s/\s*(\d+)\s*/$1/;
+
+            if ($key eq "maxage") {
+                $maxage = $value;
+                print MYDEBUG "maxage: $maxage\n" if $debug;
+            }
+            if ($key eq "maxentries") {
+                $maxentries = $value;
+                print MYDEBUG "maxentries: $maxentries\n" if $debug;
+            }
+        }
+
+        close(CFG)
+    } 
+    else {
+        say MYDEBUG "WARNING: can't open configuration file $cfg, $!";
+    }
+}
 
 sub createDirForId {
     my $year = shift;
@@ -317,9 +392,6 @@ sub isCGI {
 sub initCGI {
     my $lisCGI = shift;
     if ($lisCGI){
-        
-        open (MYDEBUG, ">$tracefile") || die "can't open mem file: $!";
-                
         my $cgi_query = CGI->new();
         $debug = $cgi_query->url_param('debug');
         $action = $cgi_query->url_param('action');
