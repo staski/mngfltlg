@@ -158,12 +158,39 @@ if ($action eq "create"){
     $pilot = length ($headerpilot) ? $headerpilot : defined($pilot_for_user{$l_username}) ? $pilot_for_user{$l_username} : "$l_username";
     $plane = length ($headerplane) ? $headerplane : $plane;
     $rules = length ($headerrules) ? $headerrules : $rules;
-    $function = length ($headerfunction) ? $headerfunction : $function,
-    
-    say MYDEBUG "using pilot: $pilot ($headerpilot)" if $debug;
-    say MYDEBUG "using plane: $plane ($headerplane)" if $debug;
-    say MYDEBUG "using rules: $rules ($headerrules)" if $debug;
-    say MYDEBUG "using function: $function ($headerfunction)" if $debug;
+    $function = length ($headerfunction) ? $headerfunction : $function;
+
+    if (validateInputString($pilot) == 0){
+        die "invalid input for Pilot";
+    }
+    else
+    {
+        say MYDEBUG "using pilot: $pilot ($headerpilot)" if $debug;
+    }
+
+    if (validateInputString($plane) == 0){
+        die "invalid input for Plane";
+    }
+    else
+    {
+       say MYDEBUG "using plane: $plane ($headerplane)" if $debug;
+    }
+
+    if (validateInputString($rules) == 0){
+        die "invalid input for Flight Rules";
+    }
+    else
+    {
+        say MYDEBUG "using rules: $rules ($headerrules)" if $debug;
+    }
+
+    if (validateInputString($function) == 0){
+        die "invalid input for Function";
+    }
+    else
+    {
+        say MYDEBUG "using function: $function ($headerfunction)" if $debug;
+    }
 
     my $source = readAirportDirectory();
     $sapt = gpxPoint->new({lat=>$lat{$source},lon=>$lon{$source}});
@@ -245,6 +272,14 @@ sub doCleanup {
         $flight->print("Diff= $diff, deleteing Entry: ") if $debug;
         deleteLogEntry($flight);
     }
+}
+
+sub validateInputString {
+    my $string = shift;
+    if ($string =~ /[\w ]{1,50}/){
+        return 1;
+    }
+    return 0;
 }
 
 sub readCfg {
