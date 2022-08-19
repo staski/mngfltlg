@@ -51,7 +51,7 @@ my $rules = "VFR";
 my $function = "PIC";
 
 $version_major = 0;
-$version_minor = 94;
+$version_minor = 95;
 
 #the current number of entries in the log
 $numentries=0;
@@ -494,7 +494,7 @@ sub readLog {
 
     my $id, $pilot, $plane, $departure, $destination, 
                 $offblock, $takeoff, $arrival, $onblock, $landings,
-                $rules, $function, $timestamp;
+                $rules, $function, $timestamp, $ifrtime_s;
     open (LOGFILE, "<$logFile") || warn "unable to open logfile: $logFile: $!";
     while (<LOGFILE>){
         if (/FLTLGHDR;(\d+)\.(\d+);(\d+)/){
@@ -511,7 +511,8 @@ sub readLog {
             $onblock = $arrival;
             $rules ="VFR";
             $function ="PIC";
-            $timestamp = time()
+            $timestamp = time();
+            $ifrtime_s = 0;
         }
         elsif ($logversion_major == 0 && $logversion_minor <= 91)
         {
@@ -519,26 +520,43 @@ sub readLog {
                 $offblock, $takeoff, $arrival, $onblock, $landings ) = split(/;/);
             $rules ="VFR";
             $function ="PIC";
-            $timestamp = time()
-
+            $timestamp = time();
+            $ifrtime_s = 0;
         }
         elsif ($logversion_major == 0 && $logversion_minor <= 93)
         {
             ( $id, $pilot, $plane, $departure, $destination,
                 $offblock, $takeoff, $arrival, $onblock,
                 $rules, $function, $landings ) = split(/;/);
-                $timestamp = time()
+                $timestamp = time();
+                if ($rules eq "IFR"){
+                    $ifrtime_s = $onblock - $offblock;
+                } else {
+                    $ifrtime_s = 0;
+                }
+        }
+        elsif ($logversion_major == 0 && $logversion_minor <= 94)
+        {
+            ( $id, $pilot, $plane, $departure, $destination,
+                $offblock, $takeoff, $arrival, $onblock,
+                $rules, $function, $landings, $timestamp ) = split(/;/);
+            if ($rules eq "IFR"){
+                $ifrtime_s = $onblock - $offblock;
+            } else {
+                $ifrtime_s = 0;
+            }
         }
         else
         {
             ( $id, $pilot, $plane, $departure, $destination,
                 $offblock, $takeoff, $arrival, $onblock,
-                $rules, $function, $landings, $timestamp  ) = split(/;/);
+                $rules, $function, $landings, $timestamp, $ifrtime_s  ) = split(/;/);
         }
 
-        chop($timestamp);
+        chop($ifrtime_s);
+        
         my $flight = new flogEntry ($id, $pilot, $plane, $departure, $destination, 
-            $offblock, $takeoff, $arrival, $onblock, $rules, $function, $landings, $timestamp);
+            $offblock, $takeoff, $arrival, $onblock, $rules, $function, $landings, $timestamp, $ifrtime_s);
         
         my $flightstats = readStatsForFlight($flight);
         if ($flightstats){
@@ -807,14 +825,14 @@ sub readGpxFile {
 
         $ap = "Unknown";
         $flight = flogEntry->new(-1, $pilot, $plane, $ap ,"",
-                                    $time, $time, 0,0, $rules, $function, 1);
+                                    $time, $time, 0,0, $rules, $function, 1, time());
 
     }
     else
     {
         say MYDEBUG "START on AP $ap (DIST = $distance, ALT = $alt_ft)" if ($debug);
         $flight = flogEntry->new(-1, $pilot, $plane, $ap ,"",
-                                    0, 0, 0,0, $rules, $function, 1);
+                                    0, 0, 0,0, $rules, $function, 1, time());
     }
 
     $speed_avg[$elapsed_minutes] = $speed;
@@ -977,7 +995,7 @@ GPXPOINT:
                     if (!defined($nextFlight))
                     {
                         $nextFlight = flogEntry->new(-1, $pilot, $plane, $ap ,"",
-                            $time, $time, 0,0, $rules, $function, 1);
+                            $time, $time, 0,0, $rules, $function, 1, time());
                         $flight->setOnBlockTime($time);
                     }
 
@@ -994,7 +1012,8 @@ GPXPOINT:
                     $total_climb = 0; $total_descend = 0;
                     $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
                     $speed_max = 0; $alt_max = 0;
-     
+                    
+                    $flight->setIfrTime();
                     push @newSegments, $flight;
                     $flight = $nextFlight;
                     undef $nextFlight;
@@ -1047,7 +1066,7 @@ GPXPOINT:
                 {
                     if (!defined($nextFlight))
                     {
-                        $nextFlight = flogEntry->new(-1, $pilot, $plane, $ap ,"", $time, $time, 0,0, $rules, $function, 1);
+                        $nextFlight = flogEntry->new(-1, $pilot, $plane, $ap ,"", $time, $time, 0,0, $rules, $function, 1, time());
                         $flight->setOnBlockTime($time);
                     }
 
@@ -1067,6 +1086,7 @@ GPXPOINT:
                     $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
                     $speed_max = 0; $alt_max = 0;
 
+                    $flight->setIfrTime();
                     push @newSegments, $flight;
                     $flight = $nextFlight;
                     undef $nextFlight;
@@ -1133,6 +1153,7 @@ GPXPOINT:
         $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
         $speed_max = 0; $alt_max = 0;
 
+        $flight->setIfrTime();
         push @newSegments, $flight;
         $flight->print("EVENT: FINAL AT_REST");
 
@@ -1155,6 +1176,8 @@ GPXPOINT:
         $total_climb = 0; $total_descend = 0;
         $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
         $speed_max = 0; $alt_max = 0;
+        $flight->setIfrTime();
+        
         push @newSegments, $flight;
         $flight->print("EVENT: FINAL TAXI->AT_REST ");
 
@@ -1519,9 +1542,17 @@ our $debug;
 
 sub new {
     my $class = shift;
-    my ( $id, $pilot, $plane, $dap, $lap, $offblock, $tot, $lat, $onblock, $rls, $fctn, $lc, $ts ) = @_;
+    my ( $id, $pilot, $plane, $dap, $lap, $offblock, $tot, $lat, $onblock, $rls, $fctn, $lc, $ts, $it_s ) = @_;
     if (!defined($ts)) {
         $ts = time();
+    }
+    if (!defined($it_s)){
+        if ($rls eq "IFR"){
+            $it_s = $onblock - $offblock;
+        } else {
+            $it_s = 0;
+        }
+        
     }
     my $self = bless {
         id => $id,
@@ -1537,6 +1568,7 @@ sub new {
         function => $fctn,
         landingCount => $lc,
         timestamp => $ts,
+        ifrtime_s => $it_s
     }, $class;
     
     return $self;
@@ -1693,6 +1725,18 @@ sub age {
     return time() - $self->{'timestamp'}
 }
 
+sub ifrtime {
+    my $self = shift;
+    return $self->{'ifrtime_s'};
+}
+
+sub setIfrTime {
+    my $self = shift;
+    if ($self->{'rules'} eq "IFR"){
+        $self->{'ifrtime_s'} = $self->{'onBlock'} - $self->{'offBlock'};
+    }
+}
+
 sub setTimestamp {
         my $self = shift;
         my $rules = shift;
@@ -1809,7 +1853,8 @@ sub logFileEntry {
     ";" . $self->rules .
     ";" . $self->function .
     ";" . $self->landingCount .
-    ";" . ($self->timestamp ? $self->timestamp : time());
+    ";" . ($self->timestamp ? $self->timestamp : time()) .
+    ";" . $self->ifrtime;
 
     say "$text" if $debug;
     return $text;
