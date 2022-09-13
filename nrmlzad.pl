@@ -39,12 +39,12 @@ sub getDistances {
 
 sub writeDirectoryByDistanceFrom {
     my $icao = shift;
-    my $filename = "world_airports_by_discance_from_$icao";
+    my $filename = "world_airports_by_distance_from_$icao";
     
     open(APDIR, ">$filename") || die "can't open $filename: $!";
     my @airports = sort { $distance{$a} <=> $distance{$b} } keys %distance;
     my $i = 0;
-    print APDIR "addbbdfi1.0;ap=$airport";
+    print APDIR "addbbdfi1.1;ap=$airport";
     foreach $ap (@airports){
         if ($i == 1000){
             my $distance = ceil($distance{$ap}/1000);
@@ -57,7 +57,7 @@ sub writeDirectoryByDistanceFrom {
     print APDIR "\n";
     foreach $ap (@airports) {
         $distance = ceil($distance{$ap}/1000);
-        print APDIR "$ap;$p_name{$ap};$lat{$ap};$lon{$ap};$alt_ft{$ap};$distance\n";
+        print APDIR "$ap;$p_name{$ap};$lat{$ap};$lon{$ap};$alt_ft{$ap};$distance;$iso_country{$ap}\n";
         say $ap . " " . $distance if $debug;
     }
     close APDIR;
@@ -121,19 +121,31 @@ sub readAirportDirectory {
     while (<ALLAIRPORTS>)
     {
         @airportLine = split (/,/);
-    
         $ICAO = $airportLine[1];
-        $ap_name = $airportLine[3];
+        
+        my $ap_name = $airportLine[3];
+        if ($airportLine[3] =~ /^\"/){
+            my $i = 0;
+            while ($airportLine[$i+3] !~ /\"$/){
+                $i++;
+                $ap_name .= $airportLine[$i+3];
+                
+            }
+            print "$ICAO = $ap_name num $i\n" if $debug;
+            splice @airportLine, 3, $i + 1, $ap_name;
+        }
         $p_name = trimName($ap_name);
         $pn_name = normalizeName($p_name);
         $ICAO{$pn_name}  = $ICAO;
         $lat = $airportLine[4];
         $lon = $airportLine[5];
         $alt_ft = $airportLine[6];
+        $iso_country = $airportLine[8];
         
         $lat{$ICAO} = $lat;
         $lon{$ICAO} = $lon;
         $alt_ft{$ICAO} = $alt_ft;
+        $iso_country{$ICAO} = $iso_country;
         $p_name{$ICAO} = $p_name;
     }
 }
@@ -154,6 +166,7 @@ sub trimName {
     $name =~ s/Flugplatz //;
     $name =~ s/Airport //;
     $name =~ s/Aviosuperficie //;
+    $name =~ s/;/,/g;
     return $name;
 }
 

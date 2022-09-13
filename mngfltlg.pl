@@ -8,6 +8,7 @@ use 5.10.0;
 use XML::LibXML;
 use Getopt::Long;
 use Date::Parse;
+use DateTime;
 
 use Math::Trig;
 #use Math::Round;
@@ -15,6 +16,8 @@ use POSIX;# for floor etc.
 use File::Temp;
 use File::Copy;
 use File::Path;
+
+
 
 
 use CGI;
@@ -51,7 +54,7 @@ my $rules = "VFR";
 my $function = "PIC";
 
 $version_major = 0;
-$version_minor = 95;
+$version_minor = 96;
 
 #the current number of entries in the log
 $numentries=0;
@@ -206,12 +209,12 @@ if ($action eq "create"){
 
     foreach my $flight (@jap) {
         $flight->setPilot($pilot);
-        
+
         if (($#allflights + 1) == $maxentries){
             say MYDEBUG " maximum number of entries reached ($maxentries)";
             last;
         }
-
+        $flight->updateNightTimes();
         my $result = addLogEntry($flight);
         if ($result > 0){
                 $flight->setId($result);
@@ -492,9 +495,9 @@ sub readLog {
     my $logversion_major = 0;
     my $logversion_minor = 0;
 
-    my $id, $pilot, $plane, $departure, $destination, 
+    my ($id, $pilot, $plane, $departure, $destination,
                 $offblock, $takeoff, $arrival, $onblock, $landings,
-                $rules, $function, $timestamp, $ifrtime_s;
+                $rules, $function, $timestamp, $ifrtime_s, $nighttime, $nightlandings);
     open (LOGFILE, "<$logFile") || warn "unable to open logfile: $logFile: $!";
     while (<LOGFILE>){
         if (/FLTLGHDR;(\d+)\.(\d+);(\d+)/){
@@ -513,6 +516,8 @@ sub readLog {
             $function ="PIC";
             $timestamp = time();
             $ifrtime_s = 0;
+            $nighttime = 0;
+            $nightlandings = 0;
         }
         elsif ($logversion_major == 0 && $logversion_minor <= 91)
         {
@@ -522,6 +527,8 @@ sub readLog {
             $function ="PIC";
             $timestamp = time();
             $ifrtime_s = 0;
+            $nighttime = 0;
+            $nightlandings = 0;
         }
         elsif ($logversion_major == 0 && $logversion_minor <= 93)
         {
@@ -534,6 +541,8 @@ sub readLog {
                 } else {
                     $ifrtime_s = 0;
                 }
+            $nighttime = 0;
+            $nightlandings = 0;
         }
         elsif ($logversion_major == 0 && $logversion_minor <= 94)
         {
@@ -545,18 +554,30 @@ sub readLog {
             } else {
                 $ifrtime_s = 0;
             }
+            $nighttime = 0;
+            $nightlandings = 0;
         }
-        else
+        elsif ($logversion_major == 0 && $logversion_minor <= 95)
         {
             ( $id, $pilot, $plane, $departure, $destination,
                 $offblock, $takeoff, $arrival, $onblock,
                 $rules, $function, $landings, $timestamp, $ifrtime_s  ) = split(/;/);
-        }
+            chop ($ifrtime_s);
+            $nighttime = 0;
+            $nightlandings = 0;
+        } else {
+            ( $id, $pilot, $plane, $departure, $destination,
+                $offblock, $takeoff, $arrival, $onblock,
+                $rules, $function, $landings, $timestamp, $ifrtime_s,
+                $nighttime, $nightlandings) = split(/;/);
 
-        chop($ifrtime_s);
+                chop($nightlandings);
+        }
         
         my $flight = new flogEntry ($id, $pilot, $plane, $departure, $destination, 
             $offblock, $takeoff, $arrival, $onblock, $rules, $function, $landings, $timestamp, $ifrtime_s);
+        $flight->setNightTime($nighttime);
+        $flight->setNightLandings($nightlandings);
         
         my $flightstats = readStatsForFlight($flight);
         if ($flightstats){
@@ -1218,7 +1239,9 @@ sub findNearestAirportWithHint {
 #find the airtport closest to point target,
 sub findNearestAirport {
     my $target = shift;
-    my $i; $start;
+    my $i;
+    my $start;
+    my $end;
     my $nearest = 100000000;
     my $nix = 0;
     
@@ -1228,10 +1251,10 @@ sub findNearestAirport {
         #say MYDEBUG "IDX $i DISTANCE $distances[$i]" if ($debug);
     }
     
-    $start = 0;
-    $end = ($i + 1) * 1000;
-    if ($end > $#allairports){
-        $end = $#allairports;
+    $start = $i * 1000; # this is not a correct algorithm, the search set should be larger. It works nevertheless
+    $end = ($i + 2) * 1000;
+    if ($end > $#allairports +1){
+        $end = $#allairports +1;
     }
 
     say MYDEBUG "SEARCH between $start and $end" if ($debug);
@@ -1290,11 +1313,18 @@ sub readAirportDirectory {
         $alt_ft = $airportLine[4];
         $dist_km = $airportLine[5];
         
+        if ($major > 1 || $minor > 0){
+            $isocountry = $airportLine[7];
+        } else {
+            $isocountry = "XX";
+        }
+        
         $lat{$ICAO} = $lat;
         $lon{$ICAO} = $lon;
         $alt_ft{$ICAO} = $alt_ft;
         $p_name{$ICAO} = $ap_name;
         $dist_km{$ICAO} = $dist_km;
+        $country{$ICAO} = $isocountry;
         
         push @allairports, $ICAO;
     }
@@ -1302,6 +1332,98 @@ sub readAirportDirectory {
     close ALLAIRPORTS;
     
     return $sourceAirport;
+}
+
+sub coordsForAP {
+    my $ap = shift;
+    return ($lat{$ap},$lon{$ap});
+}
+
+# lat / lon as decimals
+# height as degrees
+sub sunRiseSet {
+    my $lat = shift;
+    my $lon = shift;
+    my $seconds = shift;
+    my $height = shift;
+    
+    my $dt = DateTime->from_epoch(epoch => $seconds);
+    my $year = $dt->year;
+    my $dayoy = $dt->day_of_year;
+    my $day = $dt->day;
+    my $month = $dt->month;
+    my $datet =  $dt->day . ".$month.$year " . $dt->hms;
+    
+    # record the start of the day as the sunrise dates are in time of day
+    my $srd = DateTime->new(
+        year => $year,
+        month => $month,
+        day => $day,
+        time_zone => 'UTC');
+    my $ssd = $srd->clone();
+    
+    my $latr = deg2rad($lat);
+    
+    # equation of time according to https://www.astronomie.info/zeitgleichung/
+    my $eot = -0.171 * sin(0.0337 * $dayoy + 0.465) - 0.1299 * sin(0.01787 * $dayoy - 0.168);
+
+    my $declination = 0.4095 * sin(0.016906 * ($dayoy - 80.086));
+
+    my $h =  deg2rad($height);
+    my $tmp = (sin($h) - (sin($latr) * sin($declination))) / (cos($latr) * cos($declination));
+
+    if (abs($tmp) > 1) {
+        warn("Height $h not reached");
+        return -1;
+    }
+
+    my $diff = 12 * acos( $tmp )/ pi;
+
+    # sunrise and -set in mean local time
+    my $sr = 12 - $diff - $eot;
+    my $ss = 12 + $diff - $eot;
+
+    # convert: mean local time -> UTC
+    $sr = $sr  -$lon/15;
+    if ($sr < 0){
+        $sr += 24;
+        $srd->subtract( days => 1);
+    }
+
+    my $hours = int($sr);
+    my $m = $sr - $hours;
+    my $minutes = int(($m * 60));
+    $seconds = int(($m*60 - $minutes)*60);
+    
+    $srd->set(
+        hour => $hours,
+        minute => $minutes,
+        second => $seconds);
+
+    $ss = $ss - $lon/15;# + $off/3600; #+ (15 - $lon ) * 4/60;
+
+    if ($ss > 24){
+        $ss -= 24;
+        $ssd->add( days => 1);
+    }
+    
+    $hours = int($ss);
+    $m = $ss - $hours;
+    $minutes = int(($m * 60));
+    $seconds = int(($m*60 - $minutes)*60);
+
+    $ssd->set(
+        hour => $hours,
+        minute => $minutes,
+        second => $seconds);
+
+    
+    
+#    my $srs = getHoursMinutes($sr);
+#    my $sss = getHoursMinutes($ss);
+    print main::MYDEBUG "Day $datet ($lat, $lon), sunrise: $srd , sunset: $ssd\n"  if ($debug);
+    
+    return ($srd->epoch, $ssd->epoch);
 }
 
 
@@ -1536,7 +1658,6 @@ sub read_json {
 package flogEntry;
 use 5.10.0;
 use POSIX;
-
 our $debug;
 
 
@@ -1554,6 +1675,7 @@ sub new {
         }
         
     }
+
     my $self = bless {
         id => $id,
         plane => $plane,
@@ -1568,7 +1690,9 @@ sub new {
         function => $fctn,
         landingCount => $lc,
         timestamp => $ts,
-        ifrtime_s => $it_s
+        ifrtime_s => $it_s,
+        nightTime => 0,
+        nightLandings => -1
     }, $class;
     
     return $self;
@@ -1584,15 +1708,6 @@ sub stats
 {
     my $self = shift;
     return $self->{stats};
-}
-
-sub fromString {
-    my $self = shift;
-    my $text = shift;
-    my @flogArray = split (/;/, $text);
-    my $flEntry =  flogEntry->new(@flogArray);
-    return $flEntry;
-
 }
 
 sub dayofFlight {
@@ -1737,6 +1852,29 @@ sub setIfrTime {
     }
 }
 
+sub nightTime {
+    my $self = shift;
+    return $self->{'nightTime'};
+}
+
+sub setNightTime {
+    my $self = shift;
+    my $seconds = shift;
+    $self->{'nightTime'} = $seconds;
+}
+
+sub nightLandings {
+    my $self = shift;
+    return $self->{'nightLandings'};
+}
+
+sub setNightLandings {
+    my $self = shift;
+    my $count = shift;
+    $self->{'nightLandings'} = $count;
+}
+
+
 sub setTimestamp {
         my $self = shift;
         my $rules = shift;
@@ -1836,10 +1974,48 @@ sub read_json {
 }
 
 
+sub updateNightTimes {
+    my $self = shift();
+    
+    my ($la, $lo) = main::coordsForAP($self->landingAirport);
+    my $nighttime = $self->nightTime;
+    my $nightlandings = $self->nightLandings;
+    my $lc = $self->landingCount;
+    my $t1 = $self->takeoffTime_seconds;
+    my $t2 = $self->landingTime_seconds;
+    
+    if ($nightlandings == -1){
+        $nightlandings = 0;
+        my ($srs, $sst) = main::sunRiseSet($la, $lo, $t2, -6);
+        if ($srs == -1){
+            say main::MYDEBUG "no sunrise or sunset today" if $debug;
+        } elsif ($t1 > $srs && $t2 < $sst){
+            say main::MYDEBUG "takeoff and landing during day time" if $debug;
+        } elsif ($t2 >= $sst){
+            $nightlandings = $lc;
+            if ($t1 < $sst){
+                $nighttime = $t2 - $sst;
+            } else {
+                $nighttime = $t2 - $t1;
+            }
+        } else { #$t1 <= $srs
+            if ($t2 < $srs){
+                $nightlandings = $lc;
+                $nighttime = $t2 - $t1;
+            } else {
+                $nighttime = $srs - $t1;
+            }
+        }
+        
+        $self->setNightTime($nighttime);
+        $self->setNightLandings($nightlandings);
+    }
+}
 
 sub logFileEntry {
     my $self = shift;
     my $text = shift;
+
     $text .=
     $self->id .
     ";" . $self->pilot .
@@ -1854,7 +2030,9 @@ sub logFileEntry {
     ";" . $self->function .
     ";" . $self->landingCount .
     ";" . ($self->timestamp ? $self->timestamp : time()) .
-    ";" . $self->ifrtime;
+    ";" . $self->ifrtime .
+    ";" . $self->nightTime .
+    ";" . $self->nightLandings;
 
     say "$text" if $debug;
     return $text;
@@ -1863,7 +2041,6 @@ sub logFileEntry {
 sub print {
     my $self = shift;
     my $text = shift;
-    
     
     $text .= $self->pilot .
     ";" . $self->plane . 
@@ -1876,6 +2053,8 @@ sub print {
     ";" . $self->rules .
     ";" . $self->function .
     ";" . $self->landingCount .
+    ";" . $self->nightTime .
+    ";" . $self->nightLandings .
     ";" . $self->timestamp;
     
     say main::MYDEBUG "$text\n";
