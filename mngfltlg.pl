@@ -1872,6 +1872,10 @@ sub setNightLandings {
     my $self = shift;
     my $count = shift;
     $self->{'nightLandings'} = $count;
+    $self->{'landingCount'} -= $count;
+    if ($self->{'landingCount'} < 0) {
+        $self->{'landingCount'} = 0;
+    }
 }
 
 
