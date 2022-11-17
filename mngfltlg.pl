@@ -771,6 +771,7 @@ sub readGpxFile {
     my $likelytakeoffspeed = 50;
     my $takeoffSpeed = 70;
     my $landingSpeed = 60;
+    my $ultimateLandingSpeed = 10;
     my $taxiSpeed = 5;
     my $feet_for_m = 3.28084;
 
@@ -1052,7 +1053,7 @@ GPXPOINT:
             elsif ($speed > $likelytakeoffspeed)
             {
                     $state = LIKELY_FLYING;
-                    $flight->print("EVENT: TAXI->LIKELY_FLYING ");
+                    $flight->print("EVENT: TAXI->LIKELY_FLYING (speed = $speed kts, alt = $ele ft)");
             }
             
             if ($speed < $taxiSpeed)
@@ -1061,7 +1062,7 @@ GPXPOINT:
                 
                 $flight->setOnBlockTime($time);
 
-                $flight->print("EVENT: TAXI->AT_REST  ");
+                $flight->print("EVENT: TAXI->AT_REST  (speed = $speed kts, alt = $ele ft");
 
                 $count++;
             }
@@ -1079,7 +1080,7 @@ GPXPOINT:
                     }
                     else
                     {
-                        $reason = " positive climb ($speed kts > $takeoffSpeed kts) ELE: $ele (AP: $alt_ft)";
+                        $reason = " positive climb (speed is $speed kts < takeoff speed $takeoffSpeed kts) ELE: $ele (AP: $alt_ft)";
                     }
                 }
 
@@ -1124,7 +1125,7 @@ GPXPOINT:
             elsif ($speed < $landingSpeed)
             {
                 $state = TAXI;
-                $flight->print("EVENT: LIKELY_FLYING->TAXI");
+                $flight->print("EVENT: LIKELY_FLYING->TAXI (speed = $speed kts, alt = $ele ft)");
             }
             
         }
@@ -1135,7 +1136,7 @@ GPXPOINT:
                 $ap = findNearestAirportWithHint($loc, $ap);
                 $alt_ft = $alt_ft{$ap};
 
-                if ($ele - $alt_ft <= 50)
+                if (($ele - $alt_ft <= 50) || ($speed < $ultimateLandingSpeed))
                 {
                     $state = TAXI;
                     
@@ -1184,7 +1185,7 @@ GPXPOINT:
     if ($state == TAXI)
     {
         $flight->setOnBlockTime($time);
-        my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE, 
+        my $stats = flogStats->new($distance / (1000 * KM_FOR_NM), $elapsed_minutes / TI_PER_MINUTE,
                     $rest_minutes / TI_PER_MINUTE, $taxi_minutes / TI_PER_MINUTE,
                     $flying_minutes / TI_PER_MINUTE, $climb_minutes /TI_PER_MINUTE, $straightlevel_minutes / TI_PER_MINUTE, 
                     $descend_minutes / TI_PER_MINUTE, $total_climb, $total_descend,
@@ -1192,13 +1193,13 @@ GPXPOINT:
                     );
         $flight->setStats($stats);
         $flight->{stats}->print() if $debug;
-        
+
         $distance = 0; $elapsed_minutes = 0; $climb_minutes = 0; $straightlevel_minutes = 0; $descend_minutes = 0;
         $total_climb = 0; $total_descend = 0;
         $rest_minutes = 0; $taxi_minutes = 0; $flying_minutes =0;
         $speed_max = 0; $alt_max = 0;
         $flight->setIfrTime();
-        
+
         push @newSegments, $flight;
         $flight->print("EVENT: FINAL TAXI->AT_REST ");
 
@@ -1620,6 +1621,10 @@ sub merge {
 sub print 
 {
     my $self = shift;
+    if ($self->{flyingMinutes} == 0){
+        say main::MYDEBUG "no data in flight";
+        return;
+    }
     my $avgSpeed = 3600 * $self->{flightDistanceNM} / ($self->{flyingMinutes} * 60);
 
     say main::MYDEBUG "Total time: $self->{elapsedMinutes} min";
