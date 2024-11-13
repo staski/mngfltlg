@@ -11,7 +11,6 @@ use Date::Parse;
 use DateTime;
 
 use Math::Trig;
-#use Math::Round;
 use POSIX;# for floor etc.
 use File::Temp;
 use File::Copy;
@@ -29,16 +28,12 @@ package main;
 
 my $scriptName = $0;
 
-#possible values: add, list, read, delete
-my $caction = "create";
 
 my $json = 1;
 
 $cfgdir = "./flights";
 $cfgFile = $cfgdir . "/gpx2fltlog.cfg";
 
-my $postdata;
-my $request_method;
 
 my $gpxName = 'ttfExample.gpx';
 my $sapt;
@@ -48,8 +43,6 @@ my $pilot = "EXAMPLE PILOT";
 my $rules = "VFR";
 my $function = "PIC";
 
-#the highest id *ever* found in the log. This number is strictly increasing
-#over time
 $tracefile =  "flights/trace.log";
 
 use constant {
@@ -66,7 +59,6 @@ $headerfunction = "";
 $trkptcnt = 0;
 
 GetOptions ("debug=s" => \$debug,
-            "action=s" => \$caction,
             "gpxName=s" => \$gpxName,
             "json!" => \$json
 );
@@ -77,90 +69,83 @@ $isCGI = isCGI($scriptName);
 
 my $cgi_query = initCGI($isCGI);
 
-$action = getAction($isCGI);
 say MYDEBUG "ACTION=$action" if $debug;
 
-$actionParam = getActionParams($isGCI, $action);
-say MYDEBUG  "ACTIONPARAM=$postdata" if $debug;
 
-#exit;
 $mystart = time;
 
-if ($action eq "create"){
+$pilot = length ($headerpilot) ? $headerpilot : $pilot;
+$plane = length ($headerplane) ? $headerplane : $plane;
+$rules = length ($headerrules) ? $headerrules : $rules;
+$function = length ($headerfunction) ? $headerfunction : $function;
 
-    $pilot = length ($headerpilot) ? $headerpilot : $pilot;
-    $plane = length ($headerplane) ? $headerplane : $plane;
-    $rules = length ($headerrules) ? $headerrules : $rules;
-    $function = length ($headerfunction) ? $headerfunction : $function;
-
-    if (validateInputString($pilot) == 0){
-        die "invalid input for Pilot";
-    }
-    else
-    {
-        say MYDEBUG "using pilot: $pilot ($headerpilot)" if $debug;
-    }
-
-    if (validateInputString($plane) == 0){
-        die "invalid input for Plane";
-    }
-    else
-    {
-       say MYDEBUG "using plane: $plane ($headerplane)" if $debug;
-    }
-
-    if (validateInputString($rules) == 0){
-        die "invalid input for Flight Rules";
-    }
-    else
-    {
-        say MYDEBUG "using rules: $rules ($headerrules)" if $debug;
-    }
-
-    if (validateInputString($function) == 0){
-        die "invalid input for Function";
-    }
-    else
-    {
-        say MYDEBUG "using function: $function ($headerfunction)" if $debug;
-    }
-
-    my $source = readAirportDirectory();
-    $sapt = gpxPoint->new({lat=>$lat{$source},lon=>$lon{$source}});
-
-    my @flightSegments = readGpxFile($gpxName);
-    if ($#flightSegments < 0){
-        die "not a valid flight found in $gpxName";
-    }
-
-    # join those entries where the takeoff is from the same AP as the landing of the previous and this
-    # one
-    joinFlights(@flightSegments);
-
-    foreach my $flight (@jap) {
-        $flight->setPilot($pilot);
-
-        $flight->updateNightTimes();
-        my $result = addLogEntry($flight);
-        if ($result > 0){
-                $flight->setId($result);
-                print MYDEBUG  "LogEntry exists ID: " . $result . "\n" if $debug;
-        }
-        else {
-            my $jsparser = JSON->new->utf8;
-            $jsparser->convert_blessed(1);
-            my $jsstats = $jsparser->encode($flight->{stats});
-            say MYDEBUG "current statistics: $jsstats" if $debug;   
-        }
-    }
-    
-    my $JS = JSON->new->utf8;
-    $JS->convert_blessed(1);
-    my $jsoutput = $JS->encode(\@jap);
-    say "$jsoutput";
-    
+if (validateInputString($pilot) == 0){
+    die "invalid input for Pilot";
+}
+else
+{
+    say MYDEBUG "using pilot: $pilot ($headerpilot)" if $debug;
 }
 
+if (validateInputString($plane) == 0){
+    die "invalid input for Plane";
+}
+else
+{
+   say MYDEBUG "using plane: $plane ($headerplane)" if $debug;
+}
+
+if (validateInputString($rules) == 0){
+    die "invalid input for Flight Rules";
+}
+else
+{
+    say MYDEBUG "using rules: $rules ($headerrules)" if $debug;
+}
+
+if (validateInputString($function) == 0){
+    die "invalid input for Function";
+}
+else
+{
+    say MYDEBUG "using function: $function ($headerfunction)" if $debug;
+}
+
+my $source = readAirportDirectory();
+$sapt = gpxPoint->new({lat=>$lat{$source},lon=>$lon{$source}});
+
+my @flightSegments = readGpxFile($gpxName);
+if ($#flightSegments < 0){
+    die "not a valid flight found in $gpxName";
+}
+
+# join those entries where the takeoff is from the same AP as the landing of the previous and this
+# one
+joinFlights(@flightSegments);
+
+foreach my $flight (@jap) {
+    $flight->setPilot($pilot);
+
+    $flight->updateNightTimes();
+    my $result = addLogEntry($flight);
+    if ($result > 0){
+            $flight->setId($result);
+            print MYDEBUG  "LogEntry exists ID: " . $result . "\n" if $debug;
+    }
+    else {
+        my $jsparser = JSON->new->utf8;
+        $jsparser->convert_blessed(1);
+        my $jsstats = $jsparser->encode($flight->{stats});
+        say MYDEBUG "current statistics: $jsstats" if $debug;   
+    }
+}
+
+my $JS = JSON->new->utf8;
+$JS->convert_blessed(1);
+my $jsoutput = $JS->encode(\@jap);
+say "$jsoutput";
+
+    
 my $duration = time - $mystart;
 say MYDEBUG "FINISHED after $duration seconds\n" if $debug;
 
@@ -214,20 +199,19 @@ sub initCGI {
         my $cgi_query = CGI->new();
         $debug = $cgi_query->url_param('debug');
         $action = $cgi_query->url_param('action');
-        $request_method = $cgi_query->request_method();
+        my $request_method = $cgi_query->request_method();
         my $referer = $cgi_query->referer();
+        say MYDEBUG "request method: $request_method, action: $action, debug: $debug" if $debug;
         
-        if ($action eq "update" || $action eq "delete"){
-            $postdata = $cgi_query->param('POSTDATA');
-        }
-
-        if ($action eq "create"){
+        if ($action eq "create" && $request_method eq "POST"){
             $headerpilot = $cgi_query->param('pilot');
             $headerplane = $cgi_query->param('plane');
             $headerrules = $cgi_query->param('rules');
             $headerfunction = $cgi_query->param('function');
             $gpxName = getGpxName($cgi_query);
             
+        } else {
+            say "invalid action";
         }
 
         if ($json == 1){
@@ -245,32 +229,6 @@ sub initCGI {
     }
 }
 
-sub getAction {
-    my $lisCGI = shift;
-    
-    if ($lisCGI){
-        return $action;
-    }
-    else
-    {
-        return $caction;
-    }
-}
-
-sub getActionParams {
-    my $lisCGI = shift;
-    my $laction = shift;
-    my $larg;
-    
-    if ($lisCGI){
-        $larg = $postdata;
-    } else {
-        $larg = $ARGV[0];
-    }
-
-    return $larg;
-}
-
 sub addLogEntry {
     my $flight = shift;
     my $IDX=-1;
@@ -281,7 +239,6 @@ sub addLogEntry {
         return $result;
     }
 
-    $flight->setId($flight->takeoffTime_seconds);
     if ($#allflights == -1){
         print MYDEBUG  "new flightlog\n" if $debug;
         push(@allflights, $flight);
@@ -309,6 +266,7 @@ sub addLogEntry {
 sub validateFlight {
     my $flight = shift;
     my $takeoff_s = $flight->takeoffTime_seconds;
+    my $landing_s = $flight->landingTime_seconds;
     my $tmp_s;
     
     if ($flight->hasValidId() == 1){
@@ -322,15 +280,13 @@ sub validateFlight {
     for (my $i = 0; $i <= $#allflights; $i++){
         $l_tot_s = $allflights[$i]->offBlock_seconds;
         $l_lt_s = $allflights[$i]->onBlock_seconds;
-          if ($takeoff_s >= $l_tot_s && $takeoff_s < $l_lt_s){
-                my $lid = $allflights[$i]->id;
-                say MYDEBUG  "conflicting flight $lid $l_tot_s <= $takeoff_s < $l_lt_s\n" if $debug;
-
-                if ($takeoff_s == $l_tot_s) {
-                    $flight->setId($lid);
-                }
-                push @returnLogs, $allflights[$i];
-                return $lid;
+        if ($takeoff_s >= $l_tot_s && $takeoff_s < $l_lt_s){
+            say MYDEBUG  "conflicting flight with $l_tot_s (offblock) <= $takeoff_s (takeoff) < $l_lt_s (onblock)\n" if $debug;
+            return 1;
+        }
+        if ($landing_s >= $l_tot_s && $landing_s < $l_lt_s){
+            say MYDEBUG  "conflicting flight $l_tot_s (offblock) <= $landing_s (landing)< $l_lt_s (onblock)\n" if $debug;
+            return 1;
         }
     }
     return 0;
@@ -600,7 +556,7 @@ GPXPOINT:
                     #if we do a landing, then taxi, then takeoff again, the first flight has onblock time equeal to
                     #takeoff time of the second flight, and equal to offblocktime of that flight
                 }
-                $flight->print("EVENT: AT_REST->TAXI ");
+                $flight->print("EVENT: AT_REST->TAXI ") if $debug;
                 $count++;
 
             }
@@ -645,13 +601,13 @@ GPXPOINT:
 
                 $count++;
                 
-                $flight->print("EVENT: TAXI->FLYING ");
+                $flight->print("EVENT: TAXI->FLYING ") if $debug;
 
             }
             elsif ($speed > $likelytakeoffspeed)
             {
                     $state = LIKELY_FLYING;
-                    $flight->print("EVENT: TAXI->LIKELY_FLYING (speed = $speed kts, alt = $ele ft)");
+                    $flight->print("EVENT: TAXI->LIKELY_FLYING (speed = $speed kts, alt = $ele ft)") if $debug;
             }
             
             if ($speed < $taxiSpeed)
@@ -660,7 +616,7 @@ GPXPOINT:
                 
                 $flight->setOnBlockTime($time);
 
-                $flight->print("EVENT: TAXI->AT_REST  (speed = $speed kts, alt = $ele ft");
+                $flight->print("EVENT: TAXI->AT_REST  (speed = $speed kts, alt = $ele ft") if $debug;
 
                 $count++;
             }
@@ -716,14 +672,14 @@ GPXPOINT:
                         $flight->setTakeoffTime($time);
                 }
                 $reason = "EVENT: LIKELY_FLYING->FLYING ($reason)";
-                $flight->print($reason);
+                $flight->print($reason) if $debug;
 
                 $count++;
             }
             elsif ($speed < $landingSpeed)
             {
                 $state = TAXI;
-                $flight->print("EVENT: LIKELY_FLYING->TAXI (speed = $speed kts, alt = $ele ft)");
+                $flight->print("EVENT: LIKELY_FLYING->TAXI (speed = $speed kts, alt = $ele ft)") if $debug;
             }
             
         }
@@ -744,7 +700,7 @@ GPXPOINT:
                 
                     $landing_i = $i;
                 
-                    $flight->print("EVENT: FLYING->TAXI ");
+                    $flight->print("EVENT: FLYING->TAXI ") if $debug;
 
                     $count++;
                 } else
@@ -775,7 +731,7 @@ GPXPOINT:
 
         $flight->setIfrTime();
         push @newSegments, $flight;
-        $flight->print("EVENT: FINAL AT_REST");
+        $flight->print("EVENT: FINAL AT_REST") if $debug;
 
         $count++;
     }
@@ -799,7 +755,7 @@ GPXPOINT:
         $flight->setIfrTime();
 
         push @newSegments, $flight;
-        $flight->print("EVENT: FINAL TAXI->AT_REST ");
+        $flight->print("EVENT: FINAL TAXI->AT_REST ") if $debug;
 
         $count++;
     }
