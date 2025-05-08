@@ -42,6 +42,7 @@ my $plane = "DXMPL";
 my $pilot = "EXAMPLE PILOT";
 my $rules = "VFR";
 my $function = "PIC";
+my $lspeed = 30;
 
 $tracefile =  "flights/trace.log";
 
@@ -54,6 +55,7 @@ $headerpilot = "";
 $headerplane = "";
 $headerrules = "";
 $headerfunction = "";
+$headerlspeed = "";
 
 @trkpts = [];
 $trkptcnt = 0;
@@ -78,6 +80,7 @@ $pilot = length ($headerpilot) ? $headerpilot : $pilot;
 $plane = length ($headerplane) ? $headerplane : $plane;
 $rules = length ($headerrules) ? $headerrules : $rules;
 $function = length ($headerfunction) ? $headerfunction : $function;
+$lspeed = length($headerlspeed) ? $headerlspeed : $lspeed;
 
 if (validateInputString($pilot) == 0){
     die "invalid input for Pilot";
@@ -109,6 +112,21 @@ if (validateInputString($function) == 0){
 else
 {
     say MYDEBUG "using function: $function ($headerfunction)" if $debug;
+}
+
+if (validateInputString($lspeed) == 0){
+    say MYDEBUG "invalid input for lspeed, using default (30)" if $debug;
+    $lspeed=30;
+}
+else
+{
+    if ($lspeed < 5){
+        $lspeed = 5;
+    }
+    if ($lspeed > 50){
+        $lspeed = 50;
+    }
+    say MYDEBUG "using lspeed: $lspeed ($headerlspeed)" if $debug;
 }
 
 my $source = readAirportDirectory();
@@ -199,6 +217,7 @@ sub initCGI {
         my $cgi_query = CGI->new();
         $debug = $cgi_query->url_param('debug');
         $action = $cgi_query->url_param('action');
+        $headerlspeed = $cgi_query->url_param('lspeed');
         my $request_method = $cgi_query->request_method();
         my $referer = $cgi_query->referer();
         say MYDEBUG "request method: $request_method, action: $action, debug: $debug" if $debug;
@@ -208,6 +227,7 @@ sub initCGI {
             $headerplane = $cgi_query->param('plane');
             $headerrules = $cgi_query->param('rules');
             $headerfunction = $cgi_query->param('function');
+            say MYDEBUG "lspeed $headerlspeed" if $debug;
             $gpxName = getGpxName($cgi_query);
             
         } else {
@@ -325,9 +345,10 @@ sub readGpxFile {
     my $likelytakeoffspeed = 50;
     my $takeoffSpeed = 70;
     my $landingSpeed = 60;
-    my $ultimateLandingSpeed = 10;
+    my $finalLandingSpeed = $lspeed;
     my $taxiSpeed = 5;
     my $feet_for_m = 3.28084;
+    my $wasFlying = 0;
 
     my $fname = shift;
     my @newSegments;
@@ -365,6 +386,15 @@ sub readGpxFile {
     
     #read GPX-File
     my @allnodes = $xpc->findnodes('//g:trkpt');
+    my @allspeeds = $xpc->findnodes('//g:speed');
+    my @alltimes = $xpc->findnodes('//g:time');
+    my @allelevs = $xpc->findnodes('//g:ele');
+
+    say MYDEBUG "found $#allnodes entries, $#allspeeds speeds" if $debug;
+    say MYDEBUG "found $#alltimes time entries, $#allelevs elevation entries" if $debug;
+
+    # whether or not to use <speed> elements to calculate speed
+    my $usespeed = $#allspeeds > 0 ? 1 : 0;
 
     #create Pivot-Element (index 0)
     my $gpx = shift @allnodes;
@@ -427,9 +457,10 @@ GPXPOINT:
                 
         $ele = ceil($xpc->findvalue('g:ele', $gpx) * $feet_for_m);
         $speed = ceil($xpc->findvalue('g:speed', $gpx) * 3600/1852);
-        my @speedArray = $xpc->findnodes('g:speed', $gpx);
-        my $speedExists = @speedArray;
-        
+
+#        my @speedArray = $xpc->findnodes('g:speed', $gpx);
+        my $speedExists =  $xpc->exists('g:speed', $gpx);
+
         $timestr = $xpc->findvalue('g:time', $gpx);
         $time = str2time($timestr);
         
@@ -454,8 +485,8 @@ GPXPOINT:
         
         $timediff = $loc->{gpxtime} - $prev->{gpxtime};
         
-        if ($timediff == 0){
-            #say MYDEBUG "SKIP" if ($debug);
+        if ($timediff == 0 || ($speedExists == 0 && $usespeed == 1)){
+            say MYDEBUG "SKIP timediff $timediff, speedexists: $speedExists" if ($debug);
             $loc = $prev;
             next GPXPOINT;
         }
@@ -468,9 +499,10 @@ GPXPOINT:
 
         if ($speedExists == 0)
         {
+            my $oldspeed = $speed;
             $speed = $loc->distance($prev) / $timediff;
             $speed = $speed * 3600 / 1852;
-            say MYDEBUG "speed from GPX file was $speedExists, using $speed kts from coordinates instead" if ($debug);
+            say MYDEBUG "speed from GPX file was -$oldspeed-, using $speed kts from coordinates instead" if ($debug);
         }
 
         $speed_avg[$elapsed_minutes] += $speed;
@@ -564,7 +596,9 @@ GPXPOINT:
         elsif ($state == TAXI)
         {
             if ($speed > $takeoffSpeed){
+                
                 $state = FLYING;
+                $wasFlying = 1;
 
                 if ($flight->landingTime_seconds() != 0)
                 {
@@ -609,11 +643,17 @@ GPXPOINT:
                     $state = LIKELY_FLYING;
                     $flight->print("EVENT: TAXI->LIKELY_FLYING (speed = $speed kts, alt = $ele ft)") if $debug;
             }
-            
+            if ($speed < $finalLandingSpeed){
+                if ($wasFlying) 
+                {
+                    $flight->setLandingTime($time);
+                    $wasFlying = 0;
+                }
+            }
             if ($speed < $taxiSpeed)
             {
                 $state = AT_REST;
-                
+
                 $flight->setOnBlockTime($time);
 
                 $flight->print("EVENT: TAXI->AT_REST  (speed = $speed kts, alt = $ele ft") if $debug;
@@ -626,8 +666,10 @@ GPXPOINT:
             $ap = findNearestAirportWithHint($loc, $ap);
             $alt_ft = $alt_ft{$ap};
             if ($speed > $takeoffSpeed || ($ele - $alt_ft) > 50){
+
                 $state = FLYING;
-                
+                $wasFlying = 1;
+
                 if ($debug){
                     if ($speed > $takeoffSpeed){
                         $reason = " reached takeoff speed ($speed kts > $takeoffSpeed kts) ELE: $ele (AP: $alt_ft)";
@@ -690,7 +732,7 @@ GPXPOINT:
                 $ap = findNearestAirportWithHint($loc, $ap);
                 $alt_ft = $alt_ft{$ap};
 
-                if (($ele - $alt_ft <= 50) || ($speed < $ultimateLandingSpeed))
+                if (($ele - $alt_ft <= 50) || ($speed < $finalLandingSpeed))
                 {
                     $state = TAXI;
                     
