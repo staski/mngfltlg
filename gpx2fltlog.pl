@@ -1088,105 +1088,91 @@ sub coordsForAP {
     return ( $lat{$ap}, $lon{$ap} );
 }
 
-# lat / lon as decimals
-# height as degrees
-sub sunRiseSet {
-    my $lat     = shift;
-    my $lon     = shift;
-    my $seconds = shift;
-    my $height  = shift;
+sub is_daytime {
+    my ($lat, $lon, $time_epoch, $below_horizon_deg) = @_;
+    $below_horizon_deg = -6;  # civil twilight als Standardwert
 
-    #temporarily overwrite value for testing
-    $height = 0;
+    my ($sunrise, $sunset) = sunrise_sunset($lat, $lon, $time_epoch, $below_horizon_deg);
 
-    my $dt    = DateTime->from_epoch( epoch => $seconds );
-    my $year  = $dt->year;
-    my $dayoy = $dt->day_of_year;
-    my $day   = $dt->day;
-    my $month = $dt->month;
-    my $datet = $dt->day . ".$month.$year " . $dt->hms;
+    return undef unless defined $sunrise;  # Polartag oder Polarnacht
 
-    # record the start of the day as the sunrise dates are in time of day
-    my $srd = DateTime->new(
-        year      => $year,
-        month     => $month,
-        day       => $day,
-        time_zone => 'UTC'
+    return $time_epoch >= $sunrise && $time_epoch < $sunset ? 1 : 0;
+}
+
+# Returns UTC epoch timestamps of sunrise and sunset for a given location and day.
+#
+# $lat               – latitude in decimal degrees  (+N / -S)
+# $lon               – longitude in decimal degrees (+E / -W)
+# $day_epoch         – Unix timestamp of any moment on the day of interest
+# $below_horizon_deg – degrees the sun's centre is below the horizon at the
+#                      target event:
+#                        0     = geometric sunrise/sunset
+#                        0.833 = standard sunrise (refraction + disc radius)
+#                        6     = civil twilight
+#                       12     = nautical twilight
+#                       18     = astronomical twilight
+#
+# Returns ($sunrise_epoch, $sunset_epoch) in UTC,
+# or undef if the sun never reaches that angle (polar day / polar night).
+
+sub sunrise_sunset {
+    my ($lat, $lon, $day_epoch, $below_horizon_deg) = @_;
+    
+    # Approximate local solar date by shifting with the longitude offset.
+    # This is the only date information derivable from lat/lon alone.
+    my $lon_offset_s = int($lon / 15 * 3600 + 0.5);
+    my $dt_local = DateTime->from_epoch(epoch => $day_epoch + $lon_offset_s);
+    my $dayoy = $dt_local->day_of_year;
+
+    my $day_start = DateTime->new(
+        year      => $dt_local->year,
+        month     => $dt_local->month,
+        day       => $dt_local->day,
+        time_zone => 'UTC',
     );
-    my $ssd = $srd->clone();
 
     my $latr = deg2rad($lat);
+    my $h    = deg2rad(-$below_horizon_deg);   # convert to elevation angle
 
-    # equation of time according to https://www.astronomie.info/zeitgleichung/
-    my $eot = -0.171 * sin( 0.0337 * $dayoy + 0.465 ) -
-      0.1299 * sin( 0.01787 * $dayoy - 0.168 );
+    # solar declination in radians
+    my $decl = 0.4095 * sin(0.016906 * ($dayoy - 80.086));
 
-    my $declination = 0.4095 * sin( 0.016906 * ( $dayoy - 80.086 ) );
+    # equation of time in hours — https://www.astronomie.info/zeitgleichung/
+    my $eot = -0.171 * sin(0.0337 * $dayoy + 0.465)
+             - 0.1299 * sin(0.01787 * $dayoy - 0.168);
 
-    my $h   = deg2rad($height);
-    my $tmp = ( sin($h) - ( sin($latr) * sin($declination) ) ) /
-      ( cos($latr) * cos($declination) );
+    # cosine of the hour angle at the target solar elevation
+    my $cos_H = (sin($h) - sin($latr) * sin($decl))
+              / (cos($latr) * cos($decl));
 
-    if ( abs($tmp) > 1 ) {
-        warn("Height $h not reached");
-        return -1;
-    }
+    return undef if abs($cos_H) > 1;   # polar day or polar night
 
-    my $diff = 12 * acos($tmp) / pi;
+    my $half_span = 12 * acos($cos_H) / pi;   # hours from noon to sunrise/sunset
 
-    # sunrise and -set in mean local time
-    my $sr = 12 - $diff - $eot;
-    my $ss = 12 + $diff - $eot;
+    # mean solar time -> UTC: subtract longitude offset (15 deg = 1 hour)
+    my $sr_utc = 12 - $half_span - $eot - $lon / 15;
+    my $ss_utc = 12 + $half_span - $eot - $lon / 15;
 
-    my $addterm = 0;
+    # normalise both values to [0, 24)
+    #$sr_utc -= 24 * POSIX::floor($sr_utc / 24);
+    #$ss_utc -= 24 * POSIX::floor($ss_utc / 24);
+    my $sr_s = hhmm($sr_utc);
+    my $ss_s = hhmm($ss_utc);
+    say MYDEBUG "SUNRISE $sr_s, SUNSET $ss_s" if $debug;
 
-    # convert: mean local time -> UTC
-    $sr = $sr - $lon / 15;
-    say MYDEBUG "SUNRISE $sr, SUNSET $ss" if $debug;
-    if ( $sr < 0 ) {
-        $sr += 12;
-        $addterm = 12;
-        say MYDEBUG "HALLLLOOO $sr, $ss" if $debug;
-
-        #$srd->subtract( days => 1);
-    }
-
-    my $hours   = int($sr);
-    my $m       = $sr - $hours;
-    my $minutes = int( ( $m * 60 ) );
-    $seconds = int( ( $m * 60 - $minutes ) * 60 );
-
-    $srd->set(
-        hour   => $hours,
-        minute => $minutes,
-        second => $seconds
+#    if ($sr_utc > $ss_utc) {
+#        $sr_utc = $sr_utc - 3600 * 24;
+#    }
+    return (
+        $day_start->epoch + int($sr_utc * 3600 + 0.5),
+        $day_start->epoch + int($ss_utc * 3600 + 0.5),
     );
+}
 
-    $ss = $ss - $lon / 15 + $addterm;    # + $off/3600; #+ (15 - $lon ) * 4/60;
-
-    if ( $ss > 24 ) {
-        $ss -= 12;
-        $ssd->add( days => 1 );
-    }
-
-    $hours   = int($ss);
-    $m       = $ss - $hours;
-    $minutes = int( ( $m * 60 ) );
-    $seconds = int( ( $m * 60 - $minutes ) * 60 );
-
-    $ssd->set(
-        hour   => $hours,
-        minute => $minutes,
-        second => $seconds
-    );
-
-    #    my $srs = getHoursMinutes($sr);
-    #    my $sss = getHoursMinutes($ss);
-    print main::MYDEBUG
-      "Day $datet ($lat, $lon), sunrise: $srd , sunset: $ssd\n"
-      if ($debug);
-
-    return ( $srd->epoch, $ssd->epoch );
+sub hhmm {
+    my $hours_f      = shift;
+    my $total_min    = int($hours_f * 60 + 0.5);   # auf Minute runden
+    return sprintf("%02d:%02d", int($total_min / 60), $total_min % 60);
 }
 
 # the class representing a point on earth
@@ -1780,17 +1766,20 @@ sub updateNightTimes {
     my $lc            = $self->landingCount;
     my $t1            = $self->takeoffTime_seconds;
     my $t2            = $self->landingTime_seconds;
+    my $dap = $self->departureAirport;
+    my $lap = $self->landingAirport;
 
     if ( $nightlandings == -1 ) {
         $nightlandings = 0;
-        my ( $srs, $sst ) = main::sunRiseSet( $la, $lo, $t2, -6 );
-        if ( $srs == -1 ) {
-            say main::MYDEBUG "no sunrise or sunset today" if $debug;
+        my ( $srs, $sst ) = main::sunrise_sunset( $la, $lo, $t2, -6 );
+        if ( !defined $srs ) {
+            say main::MYDEBUG "no sunrise or sunset today" if $main::debug;
         }
         elsif ( $t1 > $srs && $t2 < $sst ) {
-            say main::MYDEBUG "takeoff and landing during day time" if $debug;
+            say main::MYDEBUG "takeoff and landing during day time" if $main::debug;
         }
         elsif ( $t2 >= $sst ) {
+            say main::MYDEBUG "nightlanding" if $main::debug;
             $nightlandings = $lc;
             if ( $t1 < $sst ) {
                 $nighttime = $t2 - $sst;
@@ -1800,6 +1789,8 @@ sub updateNightTimes {
             }
         }
         else {    #$t1 <= $srs
+            say main::MYDEBUG "takeoff before dawn" if $main::debug;
+
             if ( $t2 < $srs ) {
                 $nightlandings = $lc;
                 $nighttime     = $t2 - $t1;
@@ -1808,7 +1799,7 @@ sub updateNightTimes {
                 $nighttime = $srs - $t1;
             }
         }
-
+        
         $self->setNightTime($nighttime);
         $self->setNightLandings($nightlandings);
     }
