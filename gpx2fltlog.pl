@@ -12,6 +12,11 @@ use DateTime;
 
 use Math::Trig;
 use POSIX;    # for floor etc.
+
+use FindBin;                 # locate this script's directory ...
+use lib $FindBin::Bin;       # ... so SolarTime.pm is found even under CGI
+use SolarTime qw(sunrise_sunset is_daytime);
+
 use File::Temp;
 use File::Copy;
 use File::Path;
@@ -22,8 +27,17 @@ use CGI;
 use CGI::Carp qw(carpout);
 
 my $errlog_path = "flights/server_errors.log";
-open( my $errlog, '>', $errlog_path )
-  or die "Cannot open error log: $errlog_path: $!";
+my $errlog;
+unless ( open( $errlog, '>', $errlog_path ) ) {
+    # Fall back to a temp location when the primary path is not writable
+    # (e.g. running from the CLI as a user other than the web server _www).
+    require File::Spec;
+    my $fallback =
+      File::Spec->catfile( File::Spec->tmpdir, 'gpx2fltlog_errors.log' );
+    open( $errlog, '>', $fallback )
+      or die "Cannot open error log ($errlog_path or $fallback): $!";
+    warn "error log '$errlog_path' not writable, using '$fallback'\n";
+}
 carpout($errlog);    # carp/warn now go to file, not browser
 
 our ( %lat, %lon, %alt_ft, %p_name, %dist_km, %country );
@@ -134,7 +148,15 @@ sub initCGI {
 }
 
 eval {
-    open( MYDEBUG, ">$tracefile" ) || die "can't open trace $tracefile: $!";
+    unless ( open( MYDEBUG, '>', $tracefile ) ) {
+        # Same fallback as the error log: use a temp file when the primary
+        # path is not writable (CLI runs as a user other than _www).
+        require File::Spec;
+        $tracefile =
+          File::Spec->catfile( File::Spec->tmpdir, 'gpx2fltlog_trace.log' );
+        open( MYDEBUG, '>', $tracefile )
+          or die "can't open trace $tracefile: $!";
+    }
 
     $isCGI = isCGI($scriptName);
 
@@ -1088,92 +1110,8 @@ sub coordsForAP {
     return ( $lat{$ap}, $lon{$ap} );
 }
 
-sub is_daytime {
-    my ($lat, $lon, $time_epoch, $below_horizon_deg) = @_;
-    $below_horizon_deg = -6;  # civil twilight als Standardwert
-
-    my ($sunrise, $sunset) = sunrise_sunset($lat, $lon, $time_epoch, $below_horizon_deg);
-
-    return undef unless defined $sunrise;  # Polartag oder Polarnacht
-
-    return $time_epoch >= $sunrise && $time_epoch < $sunset ? 1 : 0;
-}
-
-# Returns UTC epoch timestamps of sunrise and sunset for a given location and day.
-#
-# $lat               – latitude in decimal degrees  (+N / -S)
-# $lon               – longitude in decimal degrees (+E / -W)
-# $day_epoch         – Unix timestamp of any moment on the day of interest
-# $below_horizon_deg – degrees the sun's centre is below the horizon at the
-#                      target event:
-#                        0     = geometric sunrise/sunset
-#                        0.833 = standard sunrise (refraction + disc radius)
-#                        6     = civil twilight
-#                       12     = nautical twilight
-#                       18     = astronomical twilight
-#
-# Returns ($sunrise_epoch, $sunset_epoch) in UTC,
-# or undef if the sun never reaches that angle (polar day / polar night).
-
-sub sunrise_sunset {
-    my ($lat, $lon, $day_epoch, $below_horizon_deg) = @_;
-    
-    # Approximate local solar date by shifting with the longitude offset.
-    # This is the only date information derivable from lat/lon alone.
-    my $lon_offset_s = int($lon / 15 * 3600 + 0.5);
-    my $dt_local = DateTime->from_epoch(epoch => $day_epoch + $lon_offset_s);
-    my $dayoy = $dt_local->day_of_year;
-
-    my $day_start = DateTime->new(
-        year      => $dt_local->year,
-        month     => $dt_local->month,
-        day       => $dt_local->day,
-        time_zone => 'UTC',
-    );
-
-    my $latr = deg2rad($lat);
-    my $h    = deg2rad(-$below_horizon_deg);   # convert to elevation angle
-
-    # solar declination in radians
-    my $decl = 0.4095 * sin(0.016906 * ($dayoy - 80.086));
-
-    # equation of time in hours — https://www.astronomie.info/zeitgleichung/
-    my $eot = -0.171 * sin(0.0337 * $dayoy + 0.465)
-             - 0.1299 * sin(0.01787 * $dayoy - 0.168);
-
-    # cosine of the hour angle at the target solar elevation
-    my $cos_H = (sin($h) - sin($latr) * sin($decl))
-              / (cos($latr) * cos($decl));
-
-    return undef if abs($cos_H) > 1;   # polar day or polar night
-
-    my $half_span = 12 * acos($cos_H) / pi;   # hours from noon to sunrise/sunset
-
-    # mean solar time -> UTC: subtract longitude offset (15 deg = 1 hour)
-    my $sr_utc = 12 - $half_span - $eot - $lon / 15;
-    my $ss_utc = 12 + $half_span - $eot - $lon / 15;
-
-    # normalise both values to [0, 24)
-    #$sr_utc -= 24 * POSIX::floor($sr_utc / 24);
-    #$ss_utc -= 24 * POSIX::floor($ss_utc / 24);
-    my $sr_s = hhmm($sr_utc);
-    my $ss_s = hhmm($ss_utc);
-    say MYDEBUG "SUNRISE $sr_s, SUNSET $ss_s" if $debug;
-
-#    if ($sr_utc > $ss_utc) {
-#        $sr_utc = $sr_utc - 3600 * 24;
-#    }
-    return (
-        $day_start->epoch + int($sr_utc * 3600 + 0.5),
-        $day_start->epoch + int($ss_utc * 3600 + 0.5),
-    );
-}
-
-sub hhmm {
-    my $hours_f      = shift;
-    my $total_min    = int($hours_f * 60 + 0.5);   # auf Minute runden
-    return sprintf("%02d:%02d", int($total_min / 60), $total_min % 60);
-}
+# sunrise_sunset(), is_daytime() and hhmm() now live in SolarTime.pm
+# (imported above) so eot.pl and this script share one implementation.
 
 # the class representing a point on earth
 package gpxPoint;
@@ -1771,7 +1709,7 @@ sub updateNightTimes {
 
     if ( $nightlandings == -1 ) {
         $nightlandings = 0;
-        my ( $srs, $sst ) = main::sunrise_sunset( $la, $lo, $t2, -6 );
+        my ( $srs, $sst ) = SolarTime::sunrise_sunset( $la, $lo, $t2, 6 );
         if ( !defined $srs ) {
             say main::MYDEBUG "no sunrise or sunset today" if $main::debug;
         }
